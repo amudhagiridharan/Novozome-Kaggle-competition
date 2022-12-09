@@ -67,7 +67,7 @@ test_data_withbfactor$blosum <- apply(test_data_withbfactor,1,function(x){
     return(blosum[x['wt'],x['mut']])
   }
 })
-test_data_withbfactor$blosum[newtest1$blosum>0] <- 0
+test_data_withbfactor$blosum[test_data_withbfactor$blosum>0] <- 0
 
 head(test_data_withbfactor)
 
