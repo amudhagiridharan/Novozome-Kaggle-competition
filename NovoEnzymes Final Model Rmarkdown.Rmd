@@ -1,0 +1,251 @@
+---
+title: "Novozymes Prediction"
+output:
+  pdf_document: default
+  html_document: default
+date: "2022-12-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Packages
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+library(xgboost)
+library(bioseq)
+library(dplyr)
+library(bio3d)
+```
+
+## Uploading Data
+
+```{r}
+
+
+# Original Training Data from Kaggle
+train = read.csv("train.csv")
+
+# Training data update 
+train_update= read.csv("train_updates_20220929.csv")
+
+# Test data we will be ranking and turning in
+test = read.csv("test.csv")
+test_pdb <- read.table("wildtype_structure_prediction_af2.pdb",fill=T)
+
+# PDB file containing our one test wild type
+pdbfile = read.pdb("wildtype_structure_prediction_af2.pdb" )
+
+proteinsequence = pdbfile$atom
+# Wild type sequence provided in the Kaggle "Dataset Description":
+wtseq <- 'VPVNPEPDATSVENVALKTGSGDSQSDPIKADLEVKGQSALPFDVDCWAILCKGAPNVLQRVNEKTKNSNRDRSGANKGPFKDPQKWGIKALPPKNPSWSAQDFKSPEEYAFASSLQGGTNAILAPVNLASQNSQGGVLNGFYSANKVAQFDPSKPQQTKGTWFQITKFTGAAGPYCKALGSNDKSVCDKNKNIAGDWGFDPAKWAYQYDEKNNKFNYVGK'
+
+ ## let us remove all the rows with data issues as advised by host
+train <- train[!(train$seq_id %in% train_update$seq_id),]
+str(train) # 28956 obs
+
+#Classify the train update data and identify the rows to be used
+train_update_null <-  subset(train_update,is.na(train_update$tm))
+head(train_update_null) # we are going to ignore this dataset. using only for validation purpose
+train_update_swap <- subset(train_update,!is.na(train_update$tm))
+head(train_update_swap)
+
+#use the train_update_swap dataframe to add back the rows with swapped pH & tm
+train <- rbind(train, train_update_swap)
+str(train) # 28981 obs
+
+# check for duplicates
+train[duplicated(train),] # no duplicates
+```
+
+## Train Data Wrangling
+
+
+### Step 1: add sequence char count to train data
+
+```{r}
+
+
+train$charcnt <- seq_nchar(aa(train$protein_sequence))
+
+```
+
+
+### Step 2: Let us filter out the protein sequences which have less frequency of occurrance
+
+```{r}
+seq_freq_threshold = 20
+
+train_filtered <- train %>% 
+  group_by(charcnt) %>% 
+  filter(n() >= seq_freq_threshold)
+
+```
+
+
+
+### Step 3: add cluster number to train data
+
+```{r}
+
+train_filtered$clusternum = -1
+train_filtered$wildtype = ''
+for (i in unique(train_filtered$charcnt)) {
+  train_filtered[train_filtered$charcnt == i, ]$clusternum <- seq_cluster(aa(train_filtered[train_filtered$charcnt == i, ]$protein_sequence))
+}
+
+```
+
+### Step 4: Identify the wild type for train data !! long running query
+
+for each protein sequence length(charcnt) and cluster number, loopthrough and 
+find the protein sequence consensus (wildtype)
+
+```{r}
+
+for (i in unique(train_filtered$charcnt)) {
+  for (j in unique (train_filtered[train_filtered$charcnt == i, ]$clusternum)){
+    train_filtered[(train_filtered$charcnt == i & train_filtered$clusternum == j) , ]$wildtype <- seq_consensus(aa(train_filtered[(train_filtered$charcnt == i & train_filtered$clusternum == j), ]$protein_sequence))
+  }
+}
+```
+
+
+### Step 5:  Order it by charcnt for ease of use
+
+```{r}
+train_filtered <- train_filtered[order(train_filtered$charcnt),]
+```
+
+### Step 6:  Add amino acid weightage for each sequence
+
+```{r}
+
+train_filtered_prop <- seq_stat_prop(aa(train_filtered$protein_sequence))
+train_filtered_propdf <-  as.data.frame(do.call(rbind, train_filtered_prop))
+train_filtered <- cbind (train_filtered,train_filtered_propdf )
+```
+
+
+### Step 7: Add the group info to identify potential model training data
+grouping train data by datasource, PH , charcnt and cluster
+note a set of charcnt and cluster belong to one wild type
+
+```{r}
+train_grouped <- train_filtered %>%     # Create ID by group
+  group_by(charcnt,clusternum,pH,data_source) %>%
+  dplyr::mutate(group = cur_group_id())
+
+
+head(train_grouped)
+```
+
+### Step 8:  Final step to filter out only the top 25 groups to train our model
+
+```{r}
+train_grouped_top25 <- train_grouped %>% 
+  group_by(group) %>% 
+  filter(n() > 25)
+
+head(train_grouped_top25)
+```
+
+## Modifying Test Data
+
+
+#### Step 1 Add amino acid weightage for each sequence: Let us create the sequence weightage for prediction
+
+```{r}
+test_prop <- seq_stat_prop(aa(test$protein_sequence))
+test_propdf <-  as.data.frame(do.call(rbind, test_prop))
+test <- cbind (test,test_propdf )
+
+```
+
+#### Step 2 Add mutation information to testing set:
+ Add mutation information to testing set:
+```{r}
+test[,c('type','resid','wt','mut')] <- do.call(rbind,lapply(test$protein_sequence,function(seq){
+  # case 1 = wild type:
+  if(seq==wtseq){ 
+    return(c('WT',-1,NaN,NaN))
+    # case 2 = substitution:
+  } else if(nchar(seq)==nchar(wtseq)){ 
+    i <- mapply(function(x,y) which(x!=y)[1], strsplit(seq,""), strsplit(wtseq,""))
+    return(c('SUB',i,substr(wtseq,i,i),substr(seq,i,i)))
+    # case 3 = deletion:
+  } else if(nchar(seq)<nchar(wtseq)){ 
+    wtsub <- substr(wtseq,1,nchar(seq))
+    i <- mapply(function(x,y) which(x!=y)[1], strsplit(seq,""), strsplit(wtsub,""))
+    return(c('DEL',i,substr(wtseq,i,i),NaN))
+  }
+}))
+
+head(test)
+```
+
+
+#### Step 3 - add the b factor from pdb file to test data
+
+ Read AlphaFold2 result for wild type sequence:
+```{r}
+pdb <- unique(test_pdb[test_pdb$V1=='ATOM',c(6,11)])
+colnames(pdb) <- c('resid','b')
+head(pdb)
+
+
+# Add B factor to the testing set:
+test_data_withbfactor <- merge(test,pdb,all.x=T)
+test_data_withbfactor <- test_data_withbfactor[order(test_data_withbfactor$seq_id),]
+head(test_data_withbfactor)
+
+
+# Download blosum matrix and add score to testing set:
+download.file('https://www.ncbi.nlm.nih.gov/Class/FieldGuide/BLOSUM62.txt', destfile="BLOSUM62.txt")
+blosum <- read.table('BLOSUM62.txt')
+test_data_withbfactor$blosum <- apply(test_data_withbfactor,1,function(x){
+  if(x['type']=='WT'){
+    return(0)
+  } else if(x['type']=='DEL'){
+    return(-10)
+  } else {
+    return(blosum[x['wt'],x['mut']])
+  }
+})
+test_data_withbfactor$blosum[test_data_withbfactor$blosum>0] <- 0
+
+head(test_data_withbfactor)
+```
+
+
+## Modelling Stuff
+
+
+```{r}
+library(xgboost)
+#filter the necessary rows for modeling from train dataframe
+traingrp <- data.frame(train_grouped_top25[-c(1,2,4,6,7,8,30)])
+head(traingrp)
+
+#filter test rows similar to train data
+testxgb <- test_data_withbfactor[-c(1,2,3,5,27,28,29,30,31)]
+testxgb$tm <- 0
+str(testxgb)
+xgb_train = xgb.DMatrix(data=(data.matrix(traingrp[,-2])), label=(traingrp[,2] ))
+xgb_test = xgb.DMatrix(data=(data.matrix(testxgb[,-23])), label=(testxgb[,23] ))
+xgb <- xgboost(data = xgb_train, max.depth=5,nrounds=25)
+pred_xgb = predict(xgb, xgb_test)
+head(pred_xgb)
+submission <-  data.frame(seq_id = test$seq_id)
+submission$tm <- ((-rank(test_data_withbfactor$b)/length(submission$seq_id))+(rank(pred_xgb))/length(submission$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission$seq_id))
+head(submission)  
+write.csv(submission,"submissions_new_file.csv")
+
+
+```
+
