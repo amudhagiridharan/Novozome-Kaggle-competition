@@ -21,6 +21,15 @@ library(xgboost)
 library(bioseq)
 library(dplyr)
 library(bio3d)
+library(tidyverse)
+library(rpart)
+library(bsnsing)
+library(C50)
+library(party)
+library(tree)
+library(randomForest)
+library(xgboost)
+library(gbm)
 ```
 
 ## Uploading Data
@@ -154,6 +163,28 @@ train_grouped_top25 <- train_grouped %>%
 
 head(train_grouped_top25)
 ```
+#### Step 9: Add Mutation position data
+```{r}
+
+
+train_grouped_top25[,c('type','resid','WT','MUT')] = NA
+for(i in 1:nrow(train_grouped_top25)){
+if(train_grouped_top25$protein_sequence[i]==train_grouped_top25$wildtype[i]){ 
+    train_grouped_top25[i ,c('type','resid','WT','MUT')] = as.list(c('WT',-1,NaN,NaN))
+  # case 2 = substitution:
+}
+  else if(nchar(train_grouped_top25$protein_sequence[i])==nchar(train_grouped_top25$wildtype[i])){ 
+    P <- mapply(function(x,y) which(x!=y)[1], strsplit(train_grouped_top25$protein_sequence[i],""), strsplit(train_grouped_top25$wildtype[i],""))
+    train_grouped_top25[i ,c('type','resid','WT','MUT')]=as.list(c('SUB',P,substr(train_grouped_top25$wildtype[i],P,P),substr(train_grouped_top25$protein_sequence[i],P,P)))
+    # case 3 = deletion:
+  } else if(nchar(train_grouped_top25$protein_sequence[i])<nchar(train_grouped_top25$wildtype[i])){ 
+    wtsub <- substr(train_grouped_top25$wildtype[i],1,nchar(train_grouped_top25$protein_sequence[i]))
+    P <- mapply(function(x,y) which(x!=y)[1], strsplit(train_grouped_top25$protein_sequence[i],""), strsplit(wtsub,""))
+   train_grouped_top25[i ,c('type','resid','WT','MUT')]=as.list(c('DEL',P,substr(train_grouped_top25$wildtype[i],P,P),NaN))
+  }
+} 
+
+```
 
 ## Modifying Test Data
 
@@ -170,22 +201,21 @@ test <- cbind (test,test_propdf )
 #### Step 2 Add mutation information to testing set:
  Add mutation information to testing set:
 ```{r}
-test[,c('type','resid','wt','mut')] <- do.call(rbind,lapply(test$protein_sequence,function(seq){
+test[,c('type','resid','WT','MUT')] <- do.call(rbind,lapply(test$protein_sequence,function(seq){
   # case 1 = wild type:
   if(seq==wtseq){ 
     return(c('WT',-1,NaN,NaN))
-    # case 2 = substitution:
+  # case 2 = substitution:
   } else if(nchar(seq)==nchar(wtseq)){ 
     i <- mapply(function(x,y) which(x!=y)[1], strsplit(seq,""), strsplit(wtseq,""))
     return(c('SUB',i,substr(wtseq,i,i),substr(seq,i,i)))
-    # case 3 = deletion:
+  # case 3 = deletion:
   } else if(nchar(seq)<nchar(wtseq)){ 
     wtsub <- substr(wtseq,1,nchar(seq))
     i <- mapply(function(x,y) which(x!=y)[1], strsplit(seq,""), strsplit(wtsub,""))
     return(c('DEL',i,substr(wtseq,i,i),NaN))
   }
 }))
-
 head(test)
 ```
 
@@ -214,7 +244,7 @@ test_data_withbfactor$blosum <- apply(test_data_withbfactor,1,function(x){
   } else if(x['type']=='DEL'){
     return(-10)
   } else {
-    return(blosum[x['wt'],x['mut']])
+    return(blosum[x['WT'],x['MUT']])
   }
 })
 test_data_withbfactor$blosum[test_data_withbfactor$blosum>0] <- 0
@@ -227,25 +257,551 @@ head(test_data_withbfactor)
 
 
 ```{r}
+set.seed(200)
 library(xgboost)
+trainset <- sample(1:nrow(traingrp), 1100)  # DO NOT CHANGE: you must sample 80 data points for training
+validset <- setdiff(1:nrow(traingrp), trainset)  # The remaining is used for validation
 #filter the necessary rows for modeling from train dataframe
-traingrp <- data.frame(train_grouped_top25[-c(1,2,4,6,7,8,30)])
+traingrp <- train_grouped_top25 %>% dplyr::select(pH,tm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT)
+traingrp$resid = as.integer(traingrp$resid)
+summary(traingrp)
+# group var won't filter so I'm talking it out here
+traingrp = traingrp[c(-1)]
+# makign sure it's a dataframe for the matrix
+traingrp = as.data.frame(traingrp)
 head(traingrp)
 
 #filter test rows similar to train data
-testxgb <- test_data_withbfactor[-c(1,2,3,5,27,28,29,30,31)]
-testxgb$tm <- 0
-str(testxgb)
-xgb_train = xgb.DMatrix(data=(data.matrix(traingrp[,-2])), label=(traingrp[,2] ))
-xgb_test = xgb.DMatrix(data=(data.matrix(testxgb[,-23])), label=(testxgb[,23] ))
-xgb <- xgboost(data = xgb_train, max.depth=5,nrounds=25)
-pred_xgb = predict(xgb, xgb_test)
-head(pred_xgb)
-submission <-  data.frame(seq_id = test$seq_id)
-submission$tm <- ((-rank(test_data_withbfactor$b)/length(submission$seq_id))+(rank(pred_xgb))/length(submission$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission$seq_id))
-head(submission)  
-write.csv(submission,"submissions_new_file.csv")
+test_data_withbfactor$tm <- 0
+testxgb <- test_data_withbfactor %>% dplyr::select(pH,tm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT)
 
+testxgb = as.data.frame(testxgb)
+str(testxgb)
+xgb_train = xgb.DMatrix(data=(data.matrix(traingrp[trainset,-2])), label=(traingrp[trainset,2] ))
+xgb_valid = xgb.DMatrix(data=(data.matrix(traingrp[validset,-2])), label=(traingrp[validset,2] ))
+xgb_test = xgb.DMatrix(data=(data.matrix(testxgb[,-2])), label=(testxgb[,2] ))
+xgb <- xgboost(data = xgb_train, max.depth=5,nrounds=25)
+importance_matrix = xgb.importance(colnames(xgb_train), model = xgb)
+importance_matrix
+pred_xgb = predict(xgb, xgb_valid)
+head(pred_xgb)
+df = data.frame( seq_id  = test[, "seq_id"],
+                 type = test[,"type"],
+                 Tm = pred_xgb )
+submission <-  data.frame(seq_id = test$seq_id)
+submission$tm <- (-rank(test_data_withbfactor$b)/length(submission$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission$seq_id))
+
+pred_xgb_valid = predict(xgb, xgb_valid)
+train_mse_OLS_XGB = mean((pred_xgb_valid - traingrp[validset,"tm"])^2)
+train_mse_OLS_XGB 
+                  #+(rank(pred_xgb))/length(submission$seq_id))
+
+# write.csv(df,"type_included.csv")
+# write.csv(submission,"submissions_Just_Blosum&B_factor.csv")
 
 ```
 
+
+## Professor R package
+
+```{r}
+
+
+set.seed(200)  # <-- MODIFY this number
+# DO NOT MODIFY the next four lines
+# 1 means good quality, 0 means bad quality
+traingrp2 = na.omit(traingrp)
+trainset <- sample(1:nrow(traingrp2), 1000)  # DO NOT CHANGE: you must sample 80 data points for training
+validset <- setdiff(1:nrow(traingrp2), trainset)  # The remaining is used for validation
+ # source in the ROC_func.R (presumably located in your current directory)
+#traingrp$type = as.factor(traingrp$type)
+# traingrp2$resid = as.integer(traingrp2$resid)
+# traingrp2$WT = as.factor(traingrp2$WT )
+# traingrp2$MUT = as.factor(traingrp2$MUT )
+# #library(brif)
+library(randomForest)
+
+#pred_bf <- brif(tm ~., data = traingrp2[trainset,], newdata = traingrp2[validset, ])
+ rfo <- randomForest(tm ~., data = traingrp2[trainset,])
+pred_rfo <- predict(rfo, newdata = traingrp2[validset,], type='response')
+
+
+train_mse_OLS_rf = mean((pred_rfo- traingrp2[validset,"tm"])^2)
+
+train_mse_OLS_rf 
+
+
+rp = rpart(tm ~., data = traingrp2[trainset,])
+
+pred_rp = predict(rp, newdata = traingrp2[validset,])
+
+
+
+train_mse_OLS_rp = mean((pred_rp- traingrp2[validset,"tm"])^2)
+
+train_mse_OLS_rp 
+
+trainggrp2CT = traingrp2
+# need to convert it like this back from factor for it to work
+trainggrp2CT$WT = as.factor(trainggrp2CT$WT )
+trainggrp2CT$MUT = as.factor(trainggrp2CT$MUT )
+Party_mod = ctree(tm ~., data = trainggrp2CT[trainset,])
+
+ctree_pred = predict(Party_mod, trainggrp2CT[validset,])
+
+train_mse_OLS_ctree= mean((ctree_pred- trainggrp2CT[validset,"tm"])^2)
+
+train_mse_OLS_ctree
+
+
+
+# need to convert it like this back from factor for it to work
+Tree = tree(tm ~., data = traingrp2[trainset,])
+
+Tree_pred = predict(Tree, traingrp2[validset,])
+
+train_mse_OLS_tree= mean((Tree_pred- traingrp2[validset,"tm"])^2)
+
+train_mse_OLS_tree
+
+## GBM
+
+
+gbm = gbm.fit.final3 <- gbm(
+  formula = tm ~.,
+  distribution = "gaussian",
+  n.trees = 1000,
+  data = trainggrp2CT[trainset,]
+  )
+
+gbm_pred = predict(gbm, trainggrp2CT[validset,])
+
+train_mse_OLS_gbm = mean((gbm_pred- trainggrp2CT[validset,"tm"])^2)
+
+train_mse_OLS_gbm
+
+summary.gbm(gbm)
+
+```
+
+
+## modelling on dtm 
+
+### Creating dtm on our groups
+
+```{r}
+
+### Taking means of groups with same wildtype then trying to identify the change that the mutation makes
+train_grouped_top25_dtm = train_grouped_top25
+train_grouped_top25_dtm$dtm=0
+for (i in unique(train_grouped_top25_dtm$group)) {
+  grp_mean_tm = mean(train_grouped_top25_dtm[train_grouped_top25_dtm$group == i,]$tm)
+  train_grouped_top25_dtm[train_grouped_top25_dtm$group == i,]$dtm <- (train_grouped_top25_dtm[train_grouped_top25_dtm$group == i,]$tm - grp_mean_tm)
+}
+
+train_grouped_top25_dtm$protein_length = str_length(train_grouped_top25_dtm$protein_sequence) 
+train_grouped_top25_dtm$WT_length = str_length(train_grouped_top25_dtm$wildtype) 
+
+train_grouped_top25_dtm_normalized = train_grouped_top25_dtm
+train_grouped_top25_dtm_normalized$dtm <- ave(train_grouped_top25_dtm_normalized$dtm, train_grouped_top25_dtm_normalized$group, FUN=function(x) scale(x)) 
+## Putting string length on it too
+```
+
+### Pulling in Jin Data to help 
+
+```{r}
+
+## Data From Jin in Kaggle: https://github.com/JinyuanSun/mutation-stability-data
+
+JinTrain = read.csv("train_jin.csv")
+
+JinTrain$resid = JinTrain$position
+
+JinTest = read.csv("test_jin.csv")
+
+JinTest$resid = JinTest$position
+
+JinTm = read.csv("tm_jin.csv")
+
+JinTm$dtm = JinTm$dTm
+
+JinTm$resid = JinTm$position
+
+# bio seqing on all the Jin data
+JinTm_prop <- seq_stat_prop(aa(JinTm$mutant_seq))
+JinTm_propdf <-  as.data.frame(do.call(rbind, JinTm_prop))
+JinTm <- cbind (JinTm,JinTm_propdf )
+
+JinTrain_prop <- seq_stat_prop(aa(JinTrain$mutant_seq))
+JinTrain_propdf <-  as.data.frame(do.call(rbind, JinTrain_prop))
+JinTrain <- cbind (JinTrain,JinTrain_propdf )
+
+
+JinTest_prop <- seq_stat_prop(aa(JinTest$mutant_seq))
+JinTest_propdf <-  as.data.frame(do.call(rbind, JinTest_prop))
+JinTest <- cbind (JinTest,JinTest_propdf )
+
+```
+
+
+### Putting Jin data together
+
+```{r}
+
+
+JinTest$protein_length = str_length(JinTest$mutant_seq) 
+JinTest$WT_length = str_length(JinTest$sequence) 
+#normalizing dGG for each group
+JinTest$dtm <- ave(JinTest$ddG, JinTest$PDB, FUN=function(x) scale(x)) 
+#df
+#JinTest$dTm = scale(JinTest$ddG)
+
+#Renaming Columns so they can be joined
+names(JinTest)[names(JinTest) == "mutation"] <- "MUT"
+names(JinTest)[names(JinTest) == "wildtype"] <- "WT"
+
+# Getting rid of mutations with only one row
+
+JinTrain$protein_length = str_length(JinTrain$mutant_seq) 
+JinTrain$WT_length = str_length(JinTrain$sequence) 
+#normalizing dGG
+JinTrain$dtm <- ave(JinTrain$ddG, JinTrain$PDB, FUN=function(x) scale(x)) 
+#Renaming Columns so they can be joined
+names(JinTrain)[names(JinTrain) == "mutation"] <- "MUT"
+names(JinTrain)[names(JinTrain) == "wildtype"] <- "WT"
+
+JinTm$protein_length = str_length(JinTm$mutant_seq) 
+JinTm$WT_length = str_length(JinTm$sequence) 
+JinTm_scaled = JinTm
+JinTm_scaled$dtm <- ave(JinTm$dTm, JinTm$PDB, FUN=function(x) scale(x))
+
+# Getting rid of mutations with only one row
+JinTm = na.omit(JinTm)
+JinTm_scaled = na.omit(JinTm_scaled)
+
+## combined all Jin data
+JinTm_scaled =  JinTm_scaled %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT, protein_length, WT_length)
+JinTrain2 =  JinTrain %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT, protein_length, WT_length)
+JinTest2  = JinTest %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT, protein_length, WT_length)
+Super_jin = rbind(JinTest2, JinTrain2, JinTm_scaled)
+Super_jin = na.omit(Super_jin)
+```
+
+### Putting together dTm and Normalized dTm files 
+
+```{r}
+
+traingrp_dtm <- train_grouped_top25_dtm %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT, protein_length, WT_length)
+traingrp_dtm = traingrp_dtm[c(-1)]
+
+JindTm <- JinTm %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT, protein_length, WT_length)
+
+
+dTm_mastertable = rbind(traingrp_dtm, JindTm)
+
+
+train_grouped_top25_dtm_normalized  = train_grouped_top25_dtm_normalized %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT, protein_length, WT_length)
+train_grouped_top25_dtm_normalized = train_grouped_top25_dtm_normalized[c(-1)]
+Ultra_dataset = rbind(train_grouped_top25_dtm_normalized, Super_jin)
+#dtm_master_file = rbind(JinTm, train_grouped_top25_dtm )
+```
+
+### Modelling Stuff dTm
+
+
+```{r}
+set.seed(200)
+library(xgboost)
+trainset <- sample(1:nrow(dTm_mastertable), 1900)  # DO NOT CHANGE: you must sample 80 data points for training
+validset <- setdiff(1:nrow(dTm_mastertable), trainset)  # The remaining is used for validation
+#filter the necessary rows for modeling from train dataframe
+dTm_mastertable$resid = as.integer(dTm_mastertable$resid)
+
+# makign sure it's a dataframe for the matrix
+dTm_mastertable = as.data.frame(dTm_mastertable)
+head(dTm_mastertable)
+
+#filter test rows similar to train data
+test_data_withbfactor$dtm <- 0
+test_data_withbfactor$protein_length = str_length(test_data_withbfactor$protein_sequence) 
+test_data_withbfactor$WT_length = str_length(wtseq) 
+testxgb <- test_data_withbfactor %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT, protein_length, WT_length)
+
+testxgb = as.data.frame(testxgb)
+str(testxgb)
+xgb_train = xgb.DMatrix(data=(data.matrix(dTm_mastertable[trainset,-1])), label=(dTm_mastertable[trainset,1] ))
+xgb_valid = xgb.DMatrix(data=(data.matrix(dTm_mastertable[validset,-1])), label=(dTm_mastertable[validset,1] ))
+xgb_test = xgb.DMatrix(data=(data.matrix(testxgb[,-1])), label=(testxgb[,1] ))
+xgb <- xgboost(data = xgb_train, max.depth=5,nrounds=25)
+importance_matrix = xgb.importance(colnames(xgb_train), model = xgb)
+importance_matrix
+pred_xgb = predict(xgb, xgb_test)
+head(pred_xgb)
+df_XGB = data.frame( seq_id  = test[, "seq_id"],
+                 type = test[,"type"],
+                 dTm = pred_xgb )
+submission <-  data.frame(seq_id = test$seq_id)
+submission$tm <- (-rank(test_data_withbfactor$b)/length(submission$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission$seq_id))
+
+pred_xgb_valid = predict(xgb, xgb_valid)
+train_mse_OLS_XGB_dtm  = mean((pred_xgb_valid - dTm_mastertable[validset,"dtm"])^2)
+train_mse_OLS_XGB_dtm 
+                  #+(rank(pred_xgb))/length(submission$seq_id))
+
+ # write.csv(df_XGB_dtm ,"type_included.csv")
+# write.csv(submission,"submissions_Just_Blosum&B_factor.csv")
+
+```
+
+
+## Different Model for dTm
+
+```{r}
+
+
+set.seed(200)  # <-- MODIFY this number
+# DO NOT MODIFY the next four lines
+# 1 means good quality, 0 means bad quality
+dTm_mastertable2 = na.omit(dTm_mastertable)
+trainset <- sample(1:nrow(dTm_mastertable2), 1000)  # DO NOT CHANGE: you must sample 80 data points for training
+validset <- setdiff(1:nrow(dTm_mastertable2), trainset)  # The remaining is used for validation
+ # source in the ROC_func.R (presumably located in your current directory)
+#dTm_mastertable$type = as.factor(dTm_mastertable$type)
+# dTm_mastertable2$resid = as.integer(dTm_mastertable2$resid)
+# dTm_mastertable2$WT = as.factor(dTm_mastertable2$WT )
+# dTm_mastertable2$MUT = as.factor(dTm_mastertable2$MUT )
+# #library(brif)
+library(randomForest)
+
+#pred_bf <- brif(tm ~., data = dTm_mastertable2[trainset,], newdata = dTm_mastertable2[validset, ])
+ rfo <- randomForest(dtm ~., data = dTm_mastertable2[trainset,])
+pred_rfo <- predict(rfo, newdata = dTm_mastertable2[validset,], type='response')
+
+
+train_mse_OLS_rf_dtm  = mean((pred_rfo- dTm_mastertable2[validset,"dtm"])^2)
+
+train_mse_OLS_rf_dtm  
+
+
+rp = rpart(dtm ~., data = dTm_mastertable2[trainset,])
+
+pred_rp  = predict(rp, newdata = dTm_mastertable2[validset,])
+
+
+
+train_mse_OLS_rp_dtm  = mean((pred_rp- dTm_mastertable2[validset,"dtm"])^2)
+
+train_mse_OLS_rp_dtm  
+
+trainggrp2CT = dTm_mastertable2
+# need to convert it like this back from factor for it to work
+trainggrp2CT$WT = as.factor(trainggrp2CT$WT )
+trainggrp2CT$MUT = as.factor(trainggrp2CT$MUT )
+Party_mod = ctree(dtm ~., data = trainggrp2CT[trainset,])
+
+ctree_pred = predict(Party_mod, trainggrp2CT[validset,])
+
+train_mse_OLS_ctree_dtm = mean((ctree_pred- trainggrp2CT[validset,"dtm"])^2)
+
+train_mse_OLS_ctree_dtm 
+
+
+
+# need to convert it like this back from factor for it to work
+Tree = tree(dtm ~., data = dTm_mastertable2[trainset,])
+
+Tree_pred = predict(Tree, dTm_mastertable2[validset,])
+
+train_mse_OLS_tree_dtm  = mean((Tree_pred- dTm_mastertable2[validset,"dtm"])^2)
+
+train_mse_OLS_tree_dtm 
+
+## GBM
+
+
+gbm = gbm.fit.final3 <- gbm(
+  formula = dtm ~.,
+  distribution = "gaussian",
+  n.trees = 1000,
+  data = trainggrp2CT[trainset,]
+  )
+
+gbm_pred = predict(gbm, trainggrp2CT[validset,])
+
+train_mse_OLS_gbm_dtm  = mean((gbm_pred- trainggrp2CT[validset,"dtm"])^2)
+
+train_mse_OLS_gbm_dtm 
+
+summary.gbm(gbm)
+
+```
+
+
+
+
+
+
+### Modelling Stuff Normalized dTm
+
+
+```{r}
+set.seed(200)
+library(xgboost)
+trainset <- sample(1:nrow(Ultra_dataset), 4700)  # DO NOT CHANGE: you must sample 80 data points for training
+validset <- setdiff(1:nrow(Ultra_dataset), trainset)  # The remaining is used for validation
+#filter the necessary rows for modeling from train dataframe
+Ultra_dataset$resid = as.integer(Ultra_dataset$resid)
+
+# makign sure it's a dataframe for the matrix
+Ultra_dataset = as.data.frame(Ultra_dataset)
+Ultra_dataset = na.omit(Ultra_dataset)
+head(Ultra_dataset)
+
+#filter test rows similar to train data
+test_data_withbfactor$dtm <- 0
+test_data_withbfactor$protein_length = str_length(test_data_withbfactor$protein_sequence) 
+test_data_withbfactor$WT_length = str_length(wtseq) 
+testxgb <- test_data_withbfactor %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT, protein_length, WT_length)
+
+testxgb = as.data.frame(testxgb)
+str(testxgb)
+xgb_train = xgb.DMatrix(data=(data.matrix(Ultra_dataset[trainset,-1])), label=(Ultra_dataset[trainset,1] ))
+xgb_valid = xgb.DMatrix(data=(data.matrix(Ultra_dataset[validset,-1])), label=(Ultra_dataset[validset,1] ))
+xgb_test = xgb.DMatrix(data=(data.matrix(testxgb[,-1])), label=(testxgb[,1] ))
+xgb <- xgboost(data = xgb_train, max.depth=5,nrounds=25)
+importance_matrix = xgb.importance(colnames(xgb_train), model = xgb)
+importance_matrix
+pred_xgb = predict(xgb, xgb_test)
+head(pred_xgb)
+df_XGB_nor= data.frame( seq_id  = test[, "seq_id"],
+                 type = test[,"type"],
+                 dTm = pred_xgb )
+submission <-  data.frame(seq_id = test$seq_id)
+submission$tm <- (-rank(test_data_withbfactor$b)/length(submission$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission$seq_id))
+
+pred_xgb_valid = predict(xgb, xgb_valid)
+train_mse_OLS_XGB_dtm_nor  = mean((pred_xgb_valid - Ultra_dataset[validset,"dtm"])^2)
+train_mse_OLS_XGB_dtm_nor  
+                  #+(rank(pred_xgb))/length(submission$seq_id))
+
+  write.csv(df_XGB_nor ,"type_included_nor_XGB.csv")
+# write.csv(submission,"submissions_Just_Blosum&B_factor.csv")
+
+```
+
+
+## Different Model for Normalized dTm
+
+```{r}
+
+
+set.seed(200)  # <-- MODIFY this number
+# DO NOT MODIFY the next four lines
+# 1 means good quality, 0 means bad quality
+Ultra_dataset2 = na.omit(Ultra_dataset)
+trainset <- sample(1:nrow(Ultra_dataset2), 4700)  # DO NOT CHANGE: you must sample 80 data points for training
+validset <- setdiff(1:nrow(Ultra_dataset2), trainset)  # The remaining is used for validation
+ # source in the ROC_func.R (presumably located in your current directory)
+#Ultra_dataset$type = as.factor(Ultra_dataset$type)
+# Ultra_dataset2$resid = as.integer(Ultra_dataset2$resid)
+# Ultra_dataset2$WT = as.factor(Ultra_dataset2$WT )
+# Ultra_dataset2$MUT = as.factor(Ultra_dataset2$MUT )
+# #library(brif)
+library(randomForest)
+
+#pred_bf <- brif(tm ~., data = Ultra_dataset2[trainset,], newdata = Ultra_dataset2[validset, ])
+ rfo <- randomForest(dtm ~., data = Ultra_dataset2[trainset,])
+pred_rfo <- predict(rfo, newdata = Ultra_dataset2[validset,], type='response')
+
+pred_rfo_test <- predict(rfo, newdata = testxgb, type='response')
+df_rf_nor= data.frame( seq_id  = test[, "seq_id"],
+                 type = test[,"type"],
+                 dTm = pred_rfo_test )
+write.csv(df_rf_nor ,"type_included_nor_rf.csv")
+
+cor(pred_xgb, submission$tm)
+
+submission_rf <-  data.frame(seq_id = test$seq_id)
+submission_rf$tm <- (-rank(test_data_withbfactor$b)/length(submission_rf$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_rf$seq_id)+(rank(pred_rfo_test))/length(submission_rf$seq_id))
+
+write.csv(submission_rf,"RF_combo.csv")
+
+train_mse_OLS_rf_dtm_nor   = mean((pred_rfo- Ultra_dataset2[validset,"dtm"])^2)
+
+train_mse_OLS_rf_dtm_nor   
+
+
+rp = rpart(dtm ~., data = Ultra_dataset2[trainset,])
+
+pred_rp  = predict(rp, newdata = Ultra_dataset2[validset,])
+
+pred_rp_test <- predict(rp, newdata = testxgb)
+
+train_mse_OLS_rp_dtm_nor   = mean((pred_rp- Ultra_dataset2[validset,"dtm"])^2)
+
+train_mse_OLS_rp_dtm_nor   
+
+trainggrp2CT = Ultra_dataset2
+# need to convert it like this back from factor for it to work
+trainggrp2CT$WT = as.factor(trainggrp2CT$WT )
+trainggrp2CT$MUT = as.factor(trainggrp2CT$MUT )
+Party_mod = ctree(dtm ~., data = trainggrp2CT[trainset,])
+
+ctree_pred = predict(Party_mod, trainggrp2CT[validset,])
+
+ctree_pred_test <- predict(Party_mod, newdata = testxgb)
+
+
+train_mse_OLS_ctree_dtm_nor  = mean((ctree_pred- trainggrp2CT[validset,"dtm"])^2)
+
+train_mse_OLS_ctree_dtm_nor  
+
+
+
+# need to convert it like this back from factor for it to work
+Tree = tree(dtm ~., data = Ultra_dataset2[trainset,])
+
+Tree_pred = predict(Tree, Ultra_dataset2[validset,])
+
+Tree_pred_test = predict(Tree, newdata = testxgb)
+
+train_mse_OLS_tree_dtm_nor   = mean((Tree_pred- Ultra_dataset2[validset,"dtm"])^2)
+
+train_mse_OLS_tree_dtm_nor  
+
+## GBM
+
+
+gbm = gbm.fit.final3 <- gbm(
+  formula = dtm ~.,
+  distribution = "gaussian",
+  n.trees = 1000,
+  data = trainggrp2CT[trainset,]
+  )
+
+gbm_pred = predict(gbm, trainggrp2CT[validset,])
+
+gbm_pred_test = predict(gbm, newdata = testxgb)
+
+train_mse_OLS_gbm_dtm_nor   = mean((gbm_pred- trainggrp2CT[validset,"dtm"])^2)
+
+train_mse_OLS_gbm_dtm_nor  
+
+summary.gbm(gbm)
+
+cor(submission$tm, pred_rfo_test)
+
+cor(submission$tm, pred_rp_test)
+
+
+cor(submission$tm, ctree_pred_test)
+cor(submission$tm, Tree_pred_test)
+
+
+cor(submission$tm, gbm_pred_test)
+cor(submission$tm, pred_xgb)
+
+
+
+
+```
