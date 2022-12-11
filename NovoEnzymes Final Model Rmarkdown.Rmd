@@ -236,8 +236,8 @@ head(test_data_withbfactor)
 
 
 # Download blosum matrix and add score to testing set:
-download.file('https://www.ncbi.nlm.nih.gov/Class/FieldGuide/BLOSUM62.txt', destfile="BLOSUM62.txt")
-blosum <- read.table('BLOSUM62.txt')
+download.file('https://home.cc.umanitoba.ca/~psgendb/doc/local/pkg/ugene/data/weight_matrix/blosum100.txt', destfile="BLOSUM100.txt")
+blosum <- read.table('BLOSUM100.txt')
 test_data_withbfactor$blosum <- apply(test_data_withbfactor,1,function(x){
   if(x['type']=='WT'){
     return(0)
@@ -252,15 +252,56 @@ test_data_withbfactor$blosum[test_data_withbfactor$blosum>0] <- 0
 head(test_data_withbfactor)
 ```
 
+#### Step 4 - Adding the demask Solutions for the test protein
 
-## Modelling Stuff
+```{r}
+# trial - train n demask and calculate ddg
+
+demask <-   read.table('deltafitness.txt',header=T)
+head(demask)
+demask<-demask[c(1:4)]
+demask[demask$score>0,]
+colnames(demask)[c(1:4)] <- c('resid','WT','MUT','demask')
+which(duplicated(demask))
+demask$type = 'SUB'
+str(demask)
+
+demask_del <-   read.table('demask_del.txt',header=T)
+head(demask_del)
+demask_del<-demask_del[c(1:3)]
+demask_del[demask_del$mean_score>0,]
+colnames(demask_del)[c(1:3)] <- c('resid','WT','demask')
+demask_del$type = 'DEL'
+demask_del$MUT = NaN
+testv1 <- test
+head(testv1)
+
+demask_combined <- rbind(demask,demask_del)
+head(demask_combined)
+
+
+testv1 <- merge(testv1,demask_combined[,c(1:5)],all.x=T)
+testv1[testv1$type=='WT','demask'] <- 0
+
+testv1 <- testv1[order(testv1$seq_id),]
+head(test)
+testv1[testv1$type == 'WT',]
+submission_demask <-  data.frame(seq_id = testv1$seq_id , tm = testv1$demask)
+head(submission)
+#write.csv(submission,"submissions_demaskv1.csv")
+
+
+
+```
+
+## Modelling Predicting Tm
 
 
 ```{r}
 set.seed(200)
 library(xgboost)
-trainset <- sample(1:nrow(traingrp), 1100)  # DO NOT CHANGE: you must sample 80 data points for training
-validset <- setdiff(1:nrow(traingrp), trainset)  # The remaining is used for validation
+trainset <- sample(1:nrow(train_grouped_top25), 1100)  # DO NOT CHANGE: you must sample 80 data points for training
+validset <- setdiff(1:nrow(train_grouped_top25), trainset)  # The remaining is used for validation
 #filter the necessary rows for modeling from train dataframe
 traingrp <- train_grouped_top25 %>% dplyr::select(pH,tm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT)
 traingrp$resid = as.integer(traingrp$resid)
@@ -283,13 +324,13 @@ xgb_test = xgb.DMatrix(data=(data.matrix(testxgb[,-2])), label=(testxgb[,2] ))
 xgb <- xgboost(data = xgb_train, max.depth=5,nrounds=25)
 importance_matrix = xgb.importance(colnames(xgb_train), model = xgb)
 importance_matrix
-pred_xgb = predict(xgb, xgb_valid)
+pred_xgb = predict(xgb, xgb_test)
 head(pred_xgb)
 df = data.frame( seq_id  = test[, "seq_id"],
                  type = test[,"type"],
                  Tm = pred_xgb )
-submission <-  data.frame(seq_id = test$seq_id)
-submission$tm <- (-rank(test_data_withbfactor$b)/length(submission$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission$seq_id))
+submission_TM <-  data.frame(seq_id = test$seq_id)
+submission_TM$tm <- (-rank(test_data_withbfactor$b)/length(submission_TM$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_TM$seq_id)+(rank(pred_xgb))/length(submission_TM$seq_id) + (rank(submission_demask$tm))/length(submission_TM$seq_id))
 
 pred_xgb_valid = predict(xgb, xgb_valid)
 train_mse_OLS_XGB = mean((pred_xgb_valid - traingrp[validset,"tm"])^2)
@@ -297,7 +338,7 @@ train_mse_OLS_XGB
                   #+(rank(pred_xgb))/length(submission$seq_id))
 
 # write.csv(df,"type_included.csv")
-# write.csv(submission,"submissions_Just_Blosum&B_factor.csv")
+ write.csv(submission_TM ,"submissions_TM.csv")
 
 ```
 
@@ -491,16 +532,16 @@ Super_jin = na.omit(Super_jin)
 
 ```{r}
 
-traingrp_dtm <- train_grouped_top25_dtm %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT, protein_length, WT_length)
+traingrp_dtm <- train_grouped_top25_dtm %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT)
 traingrp_dtm = traingrp_dtm[c(-1)]
 
-JindTm <- JinTm %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT, protein_length, WT_length)
+JindTm <- JinTm %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT)
 
-
+Super_jin = Super_jin %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT)
 dTm_mastertable = rbind(traingrp_dtm, JindTm)
 
 
-train_grouped_top25_dtm_normalized  = train_grouped_top25_dtm_normalized %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT, protein_length, WT_length)
+train_grouped_top25_dtm_normalized  = train_grouped_top25_dtm_normalized %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT)
 train_grouped_top25_dtm_normalized = train_grouped_top25_dtm_normalized[c(-1)]
 Ultra_dataset = rbind(train_grouped_top25_dtm_normalized, Super_jin)
 #dtm_master_file = rbind(JinTm, train_grouped_top25_dtm )
@@ -540,8 +581,9 @@ head(pred_xgb)
 df_XGB = data.frame( seq_id  = test[, "seq_id"],
                  type = test[,"type"],
                  dTm = pred_xgb )
-submission <-  data.frame(seq_id = test$seq_id)
-submission$tm <- (-rank(test_data_withbfactor$b)/length(submission$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission$seq_id))
+submission_dTM <-  data.frame(seq_id = test$seq_id)
+submission_dTM$tm <- (-rank(test_data_withbfactor$b)/length(submission_dTM$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_dTM$seq_id)+(rank(pred_xgb))/length(submission_dTM$seq_id) + (rank(submission_demask$tm))/length(submission_dTM$seq_id))
+
 
 pred_xgb_valid = predict(xgb, xgb_valid)
 train_mse_OLS_XGB_dtm  = mean((pred_xgb_valid - dTm_mastertable[validset,"dtm"])^2)
@@ -549,7 +591,7 @@ train_mse_OLS_XGB_dtm
                   #+(rank(pred_xgb))/length(submission$seq_id))
 
  # write.csv(df_XGB_dtm ,"type_included.csv")
-# write.csv(submission,"submissions_Just_Blosum&B_factor.csv")
+ write.csv(submission_dTM,"submissions_dTm.csv")
 
 ```
 
@@ -563,6 +605,7 @@ set.seed(200)  # <-- MODIFY this number
 # DO NOT MODIFY the next four lines
 # 1 means good quality, 0 means bad quality
 dTm_mastertable2 = na.omit(dTm_mastertable)
+dTm_mastertable2$resid = as.integer(dTm_mastertable2$resid)
 trainset <- sample(1:nrow(dTm_mastertable2), 1000)  # DO NOT CHANGE: you must sample 80 data points for training
 validset <- setdiff(1:nrow(dTm_mastertable2), trainset)  # The remaining is used for validation
  # source in the ROC_func.R (presumably located in your current directory)
@@ -647,6 +690,7 @@ summary.gbm(gbm)
 ```{r}
 set.seed(200)
 library(xgboost)
+Ultra_dataset = na.omit(Ultra_dataset)
 trainset <- sample(1:nrow(Ultra_dataset), 4700)  # DO NOT CHANGE: you must sample 80 data points for training
 validset <- setdiff(1:nrow(Ultra_dataset), trainset)  # The remaining is used for validation
 #filter the necessary rows for modeling from train dataframe
@@ -654,39 +698,57 @@ Ultra_dataset$resid = as.integer(Ultra_dataset$resid)
 
 # makign sure it's a dataframe for the matrix
 Ultra_dataset = as.data.frame(Ultra_dataset)
-Ultra_dataset = na.omit(Ultra_dataset)
-head(Ultra_dataset)
+Ultra_dataset$dtm = round(Ultra_dataset$dtm,10)
+summary(Ultra_dataset)
 
 #filter test rows similar to train data
 test_data_withbfactor$dtm <- 0
+test_data_withbfactor$resid = as.integer(test_data_withbfactor$resid)
 test_data_withbfactor$protein_length = str_length(test_data_withbfactor$protein_sequence) 
 test_data_withbfactor$WT_length = str_length(wtseq) 
-testxgb <- test_data_withbfactor %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT, protein_length, WT_length)
+testxgb <- test_data_withbfactor %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT)
 
 testxgb = as.data.frame(testxgb)
 str(testxgb)
 xgb_train = xgb.DMatrix(data=(data.matrix(Ultra_dataset[trainset,-1])), label=(Ultra_dataset[trainset,1] ))
 xgb_valid = xgb.DMatrix(data=(data.matrix(Ultra_dataset[validset,-1])), label=(Ultra_dataset[validset,1] ))
 xgb_test = xgb.DMatrix(data=(data.matrix(testxgb[,-1])), label=(testxgb[,1] ))
-xgb <- xgboost(data = xgb_train, max.depth=5,nrounds=25)
+
+xgb <- xgboost(data = xgb_train, max.depth=5,nrounds=1000)
+
+cv <- xgb.cv(data = xgb_train, nrounds = 50, nthread = 2, nfold = 25, metrics = list("rmse"),
+                  max_depth = 3, eta = 1, objective = "reg:squarederror")
+
 importance_matrix = xgb.importance(colnames(xgb_train), model = xgb)
 importance_matrix
+
+# importance_matrix_cv = xgb.importance(colnames(xgb_train), model = cv)
+# importance_matrix_cv
 pred_xgb = predict(xgb, xgb_test)
-head(pred_xgb)
+
 df_XGB_nor= data.frame( seq_id  = test[, "seq_id"],
                  type = test[,"type"],
                  dTm = pred_xgb )
-submission <-  data.frame(seq_id = test$seq_id)
-submission$tm <- (-rank(test_data_withbfactor$b)/length(submission$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission$seq_id))
+submission_dtm_nor <-  data.frame(seq_id = test$seq_id)
+submission_dtm_nor$dtm <- (-rank(test_data_withbfactor$b)/length(submission_dtm_nor$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_dtm_nor$seq_id)+ (rank(pred_xgb))/length(submission$seq_id) + (rank(submission_demask$tm))/length(submission_dtm_nor$seq_id))
+                                                                             #+(rank(pred_xgb))/length(submission$seq_id))
 
-pred_xgb_valid = predict(xgb, xgb_valid)
+#pred_xgb_valid = predict(xgb, xgb_valid)
 train_mse_OLS_XGB_dtm_nor  = mean((pred_xgb_valid - Ultra_dataset[validset,"dtm"])^2)
 train_mse_OLS_XGB_dtm_nor  
                   #+(rank(pred_xgb))/length(submission$seq_id))
 
-  write.csv(df_XGB_nor ,"type_included_nor_XGB.csv")
-# write.csv(submission,"submissions_Just_Blosum&B_factor.csv")
+ # write.csv(df_XGB_nor ,"type_included_nor_XGB.csv")
+ #write.csv(submission_dtm_nor,"submissions_dtm_nor.csv")
 
+#   pred_xgb_valid_cv = predict(cv, xgb_valid)
+#  train_mse_OLS_XGB_dtm_nor_cv  = mean((pred_xgb_valid_cv - Ultra_dataset[validset,"dtm"])^2)
+# train_mse_OLS_XGB_dtm_nor_cv 
+#   pred_xgb_cv = predict(cv, xgb_test)
+# df_XGB_nor_cv= data.frame( seq_id  = test[, "seq_id"],
+#                  type = test[,"type"],
+#                  dTm = pred_xgb_cv )  
+# names(cv)
 ```
 
 
@@ -710,7 +772,7 @@ validset <- setdiff(1:nrow(Ultra_dataset2), trainset)  # The remaining is used f
 library(randomForest)
 
 #pred_bf <- brif(tm ~., data = Ultra_dataset2[trainset,], newdata = Ultra_dataset2[validset, ])
- rfo <- randomForest(dtm ~., data = Ultra_dataset2[trainset,])
+rfo <- randomForest(dtm ~., data = Ultra_dataset2[trainset,])
 pred_rfo <- predict(rfo, newdata = Ultra_dataset2[validset,], type='response')
 
 pred_rfo_test <- predict(rfo, newdata = testxgb, type='response')
@@ -722,7 +784,7 @@ write.csv(df_rf_nor ,"type_included_nor_rf.csv")
 cor(pred_xgb, submission$tm)
 
 submission_rf <-  data.frame(seq_id = test$seq_id)
-submission_rf$tm <- (-rank(test_data_withbfactor$b)/length(submission_rf$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_rf$seq_id)+(rank(pred_rfo_test))/length(submission_rf$seq_id))
+submission_rf$tm <- (-rank(test_data_withbfactor$b)/length(submission_rf$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_rf$seq_id)+(rank(pred_rfo_test))/length(submission_rf$seq_id)+ (rank(submission_demask$tm))/length(submission_dtm_nor$seq_id))
 
 write.csv(submission_rf,"RF_combo.csv")
 
@@ -735,7 +797,7 @@ rp = rpart(dtm ~., data = Ultra_dataset2[trainset,])
 
 pred_rp  = predict(rp, newdata = Ultra_dataset2[validset,])
 
-pred_rp_test <- predict(rp, newdata = testxgb)
+#pred_rp_test <- predict(rp, newdata = testxgb)
 
 train_mse_OLS_rp_dtm_nor   = mean((pred_rp- Ultra_dataset2[validset,"dtm"])^2)
 
@@ -749,7 +811,7 @@ Party_mod = ctree(dtm ~., data = trainggrp2CT[trainset,])
 
 ctree_pred = predict(Party_mod, trainggrp2CT[validset,])
 
-ctree_pred_test <- predict(Party_mod, newdata = testxgb)
+#ctree_pred_test <- predict(Party_mod, newdata = testxgb)
 
 
 train_mse_OLS_ctree_dtm_nor  = mean((ctree_pred- trainggrp2CT[validset,"dtm"])^2)
@@ -781,7 +843,7 @@ gbm = gbm.fit.final3 <- gbm(
 
 gbm_pred = predict(gbm, trainggrp2CT[validset,])
 
-gbm_pred_test = predict(gbm, newdata = testxgb)
+#gbm_pred_test = predict(gbm, newdata = testxgb)
 
 train_mse_OLS_gbm_dtm_nor   = mean((gbm_pred- trainggrp2CT[validset,"dtm"])^2)
 
@@ -791,17 +853,145 @@ summary.gbm(gbm)
 
 cor(submission$tm, pred_rfo_test)
 
-cor(submission$tm, pred_rp_test)
-
-
-cor(submission$tm, ctree_pred_test)
-cor(submission$tm, Tree_pred_test)
-
-
-cor(submission$tm, gbm_pred_test)
 cor(submission$tm, pred_xgb)
 
 
+```
 
+
+
+
+## Final Models
+
+### Tm Trained with most data possible : XGB Chosen. Using full data to train. 
+```{r}
+set.seed(200)
+#filter the necessary rows for modeling from train dataframe
+traingrp <- train_grouped_top25 %>% dplyr::select(pH,tm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT)
+traingrp$resid = as.integer(traingrp$resid)
+# group var won't filter so I'm talking it out here
+traingrp = traingrp[c(-1)]
+# makign sure it's a dataframe for the matrix
+traingrp = as.data.frame(traingrp)
+
+#filter test rows similar to train data
+test_data_withbfactor$tm <- 0
+testxgb <- test_data_withbfactor %>% dplyr::select(pH,tm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT)
+
+testxgb = as.data.frame(testxgb)
+#Setting up train for XGB training
+xgb_train = xgb.DMatrix(data=(data.matrix(traingrp[,-2])), label=(traingrp[,2] ))
+xgb_test = xgb.DMatrix(data=(data.matrix(testxgb[,-2])), label=(testxgb[,2] ))
+
+# Using Cross Validation for best parameter
+xgbcv = xgb.cv(data = xgb_train, nfold =25, nrounds =1000, early_stopping_rounds = 40)
+
+opt_iterations = xgbcv$best_iteration
+
+xgb <- xgboost(data = xgb_train, max.depth=5,nrounds=opt_iterations)
+
+importance_matrix = xgb.importance(colnames(xgb_train), model = xgb)
+importance_matrix
+pred_xgb = predict(xgb, xgb_test)
+head(pred_xgb)
+df = data.frame( seq_id  = test[, "seq_id"],
+                 type = test[,"type"],
+                 Tm = pred_xgb )
+submission_TM <-  data.frame(seq_id = test$seq_id)
+submission_TM$tm <- (-rank(test_data_withbfactor$b)/length(submission_TM$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_TM$seq_id)+(rank(pred_xgb))/length(submission_TM$seq_id) + (rank(submission_demask$tm))/length(submission_TM$seq_id))
+                  #+(rank(pred_xgb))/length(submission$seq_id))
+df_submission = data.frame( seq_id  = test[, "seq_id"],
+                 type = test[,"type"],
+                 Tm = submission_TM$tm )
+
+# for deletions we will only use non-modelling data
+# Deletion type:
+idx <- df_submission$type  == 'DEL'
+df_submission_del = df_submission
+df_submission_del[idx,'Tm'] <-(-rank(test_data_withbfactor$b[idx])/length(submission_TM$seq_id[idx]))+(rank(test_data_withbfactor$blosum[idx])/length(submission_TM$seq_id[idx])+ (rank(submission_demask$tm[idx]))/length(submission_TM$seq_id[idx]) )
+
+
+
+# write.csv(df,"type_included.csv")
+ write.csv(df_submission_del ,"submissions_TM_DEL.csv")
+  write.csv(df_submission ,"submissions_TM.csv")
+```
+
+
+### dTm Model Chosen: XGB
+
+
+```{r}
+set.seed(200)
+library(xgboost)
+
+
+#filter the necessary rows for modeling from train dataframe
+dTm_mastertable$resid = as.integer(dTm_mastertable$resid)
+
+# makign sure it's a dataframe for the matrix
+ dTm_mastertable = dTm_mastertable %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT)
+ dTm_mastertable = as.data.frame(dTm_mastertable)
+dTm_mastertable = na.omit(dTm_mastertable)
+#filter test rows similar to train data
+test_data_withbfactor$dtm <- 0
+testxgb <- test_data_withbfactor %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT)
+
+testxgb = as.data.frame(testxgb)
+
+xgb_train = xgb.DMatrix(data=(data.matrix(dTm_mastertable[,-1])), label=(dTm_mastertable[,1] ))
+xgb_test = xgb.DMatrix(data=(data.matrix(testxgb[,-1])), label=(testxgb[,1] ))
+
+xgbcv_dtm = xgb.cv(data = xgb_train, nfold =25, nrounds =1000, early_stopping_rounds = 40)
+
+opt_iterations_dtm = xgbcv_dtm$best_iteration
+
+xgb_dtm  <- xgboost(data = xgb_train, max.depth=5,nrounds=opt_iterations_dtm)
+
+importance_matrix = xgb.importance(colnames(xgb_train), model = xgb_dtm )
+importance_matrix
+
+pred_xgb_dtm  = predict(xgb_dtm , xgb_test)
+
+df_XGB_dtm  = data.frame( seq_id  = test[, "seq_id"],
+                 type = test[,"type"],
+                 dTm = pred_xgb_dtm  )
+submission_dTM <-  data.frame(seq_id = test$seq_id)
+submission_dTM$tm <- (-rank(test_data_withbfactor$b)/length(submission_dTM$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_dTM$seq_id)+(rank(pred_xgb_dtm ))/length(submission_dTM$seq_id) + (rank(submission_demask$tm))/length(submission_dTM$seq_id))
+
+                  #+(rank(pred_xgb))/length(submission$seq_id))
+
+ # write.csv(df_XGB_dtm ,"type_included.csv")
+  write.csv(submission_dTM,"submissions_dTm.csv")
 
 ```
+
+
+### dTm Normalized (I guess it's just target at this point)
+
+
+```{r}
+
+
+mtry <- tuneRF(Ultra_dataset2[-1],Ultra_dataset2$dtm, ntreeTry=500,
+               stepFactor=1.5,improve=0.01, trace=TRUE, plot=TRUE)
+best.m <- mtry[mtry[, 2] == min(mtry[, 2]), 1]
+print(mtry)
+print(best.m)
+
+rfo_dtm <- randomForest(dtm ~., data = Ultra_dataset2, mtry = best.m)
+
+
+pred_rfo_test_dtm <- predict(rfo_dtm, newdata = testxgb, type='response')
+df_rf_nor= data.frame( seq_id  = test[, "seq_id"],
+                 type = test[,"type"],
+                 dTm = pred_rfo_test_dtm )
+write.csv(df_rf_nor ,"type_included_nor_rf.csv")
+
+
+submission_rf_dtm<-  data.frame(seq_id = test$seq_id)
+submission_rf_dtm$tm <- (-rank(test_data_withbfactor$b)/length(submission_rf_dtm$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_rf_dtm$seq_id)+(rank(pred_rfo_test))/length(submission_rf_dtm$seq_id)+ (rank(submission_demask$tm))/length(submission_rf_dtm$seq_id))
+
+write.csv(submission_rf_dtm,"RF_combo_dtm_nor.csv")
+```
+
