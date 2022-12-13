@@ -165,7 +165,7 @@ head(train_grouped_top25)
 ```
 #### Step 9: Add Mutation position data
 ```{r}
-
+write.csv(train_grouped_top25, "train_grouped_top25.csv")
 
 train_grouped_top25[,c('type','resid','WT','MUT')] = NA
 for(i in 1:nrow(train_grouped_top25)){
@@ -252,47 +252,7 @@ test_data_withbfactor$blosum[test_data_withbfactor$blosum>0] <- 0
 head(test_data_withbfactor)
 ```
 
-#### Step 4 - Adding the demask Solutions for the test protein
 
-```{r}
-# trial - train n demask and calculate ddg
-
-demask <-   read.table('deltafitness.txt',header=T)
-head(demask)
-demask<-demask[c(1:4)]
-demask[demask$score>0,]
-colnames(demask)[c(1:4)] <- c('resid','WT','MUT','demask')
-which(duplicated(demask))
-demask$type = 'SUB'
-str(demask)
-
-demask_del <-   read.table('demask_del.txt',header=T)
-head(demask_del)
-demask_del<-demask_del[c(1:3)]
-demask_del[demask_del$mean_score>0,]
-colnames(demask_del)[c(1:3)] <- c('resid','WT','demask')
-demask_del$type = 'DEL'
-demask_del$MUT = NaN
-testv1 <- test
-head(testv1)
-
-demask_combined <- rbind(demask,demask_del)
-head(demask_combined)
-
-
-testv1 <- merge(testv1,demask_combined[,c(1:5)],all.x=T)
-testv1[testv1$type=='WT','demask'] <- 0
-
-testv1 <- testv1[order(testv1$seq_id),]
-head(test)
-testv1[testv1$type == 'WT',]
-submission_demask <-  data.frame(seq_id = testv1$seq_id , tm = testv1$demask)
-head(submission)
-#write.csv(submission,"submissions_demaskv1.csv")
-
-
-
-```
 
 ## Modelling Predicting Tm
 
@@ -330,7 +290,7 @@ df = data.frame( seq_id  = test[, "seq_id"],
                  type = test[,"type"],
                  Tm = pred_xgb )
 submission_TM <-  data.frame(seq_id = test$seq_id)
-submission_TM$tm <- (-rank(test_data_withbfactor$b)/length(submission_TM$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_TM$seq_id)+(rank(pred_xgb))/length(submission_TM$seq_id) + (rank(submission_demask$tm))/length(submission_TM$seq_id))
+submission_TM$tm <- (-rank(test_data_withbfactor$b)/length(submission_TM$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_TM$seq_id)+(rank(pred_xgb))/length(submission_TM$seq_id))
 
 pred_xgb_valid = predict(xgb, xgb_valid)
 train_mse_OLS_XGB = mean((pred_xgb_valid - traingrp[validset,"tm"])^2)
@@ -338,7 +298,7 @@ train_mse_OLS_XGB
                   #+(rank(pred_xgb))/length(submission$seq_id))
 
 # write.csv(df,"type_included.csv")
- write.csv(submission_TM ,"submissions_TM.csv")
+ #write.csv(submission_TM ,"submissions_TM.csv")
 
 ```
 
@@ -566,7 +526,7 @@ head(dTm_mastertable)
 test_data_withbfactor$dtm <- 0
 test_data_withbfactor$protein_length = str_length(test_data_withbfactor$protein_sequence) 
 test_data_withbfactor$WT_length = str_length(wtseq) 
-testxgb <- test_data_withbfactor %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT, protein_length, WT_length)
+testxgb <- test_data_withbfactor %>% dplyr::select(dtm,A,C,G,T,W,S,M,K,R,Y,B,D,H,V,N,E,F,I,L,P,Q,resid,WT,MUT)
 
 testxgb = as.data.frame(testxgb)
 str(testxgb)
@@ -582,7 +542,7 @@ df_XGB = data.frame( seq_id  = test[, "seq_id"],
                  type = test[,"type"],
                  dTm = pred_xgb )
 submission_dTM <-  data.frame(seq_id = test$seq_id)
-submission_dTM$tm <- (-rank(test_data_withbfactor$b)/length(submission_dTM$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_dTM$seq_id)+(rank(pred_xgb))/length(submission_dTM$seq_id) + (rank(submission_demask$tm))/length(submission_dTM$seq_id))
+submission_dTM$tm <- (-rank(test_data_withbfactor$b)/length(submission_dTM$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_dTM$seq_id)+(rank(pred_xgb))/length(submission_dTM$seq_id))
 
 
 pred_xgb_valid = predict(xgb, xgb_valid)
@@ -730,13 +690,13 @@ df_XGB_nor= data.frame( seq_id  = test[, "seq_id"],
                  type = test[,"type"],
                  dTm = pred_xgb )
 submission_dtm_nor <-  data.frame(seq_id = test$seq_id)
-submission_dtm_nor$dtm <- (-rank(test_data_withbfactor$b)/length(submission_dtm_nor$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_dtm_nor$seq_id)+ (rank(pred_xgb))/length(submission$seq_id) + (rank(submission_demask$tm))/length(submission_dtm_nor$seq_id))
+submission_dtm_nor$dtm <- (-rank(test_data_withbfactor$b)/length(submission_dtm_nor$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_dtm_nor$seq_id)+ (rank(pred_xgb))/length(submission_dtm_nor$seq_id))
                                                                              #+(rank(pred_xgb))/length(submission$seq_id))
 
 #pred_xgb_valid = predict(xgb, xgb_valid)
 train_mse_OLS_XGB_dtm_nor  = mean((pred_xgb_valid - Ultra_dataset[validset,"dtm"])^2)
 train_mse_OLS_XGB_dtm_nor  
-                  #+(rank(pred_xgb))/length(submission$seq_id))
+                
 
  # write.csv(df_XGB_nor ,"type_included_nor_XGB.csv")
  #write.csv(submission_dtm_nor,"submissions_dtm_nor.csv")
@@ -779,14 +739,13 @@ pred_rfo_test <- predict(rfo, newdata = testxgb, type='response')
 df_rf_nor= data.frame( seq_id  = test[, "seq_id"],
                  type = test[,"type"],
                  dTm = pred_rfo_test )
-write.csv(df_rf_nor ,"type_included_nor_rf.csv")
+#write.csv(df_rf_nor ,"type_included_nor_rf.csv")
 
-cor(pred_xgb, submission$tm)
 
 submission_rf <-  data.frame(seq_id = test$seq_id)
-submission_rf$tm <- (-rank(test_data_withbfactor$b)/length(submission_rf$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_rf$seq_id)+(rank(pred_rfo_test))/length(submission_rf$seq_id)+ (rank(submission_demask$tm))/length(submission_dtm_nor$seq_id))
+submission_rf$tm <- (-rank(test_data_withbfactor$b)/length(submission_rf$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_rf$seq_id)+(rank(pred_rfo_test))/length(submission_rf$seq_id))
 
-write.csv(submission_rf,"RF_combo.csv")
+#write.csv(submission_rf,"RF_combo.csv")
 
 train_mse_OLS_rf_dtm_nor   = mean((pred_rfo- Ultra_dataset2[validset,"dtm"])^2)
 
@@ -851,9 +810,6 @@ train_mse_OLS_gbm_dtm_nor
 
 summary.gbm(gbm)
 
-cor(submission$tm, pred_rfo_test)
-
-cor(submission$tm, pred_xgb)
 
 
 ```
@@ -890,15 +846,18 @@ opt_iterations = xgbcv$best_iteration
 
 xgb <- xgboost(data = xgb_train, max.depth=5,nrounds=opt_iterations)
 
-importance_matrix = xgb.importance(colnames(xgb_train), model = xgb)
-importance_matrix
 pred_xgb = predict(xgb, xgb_test)
 head(pred_xgb)
 df = data.frame( seq_id  = test[, "seq_id"],
                  type = test[,"type"],
                  Tm = pred_xgb )
 submission_TM <-  data.frame(seq_id = test$seq_id)
-submission_TM$tm <- (-rank(test_data_withbfactor$b)/length(submission_TM$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_TM$seq_id)+(rank(pred_xgb))/length(submission_TM$seq_id) + (rank(submission_demask$tm))/length(submission_TM$seq_id))
+submission_TM$tm <- (-rank(test_data_withbfactor$b)/length(submission_TM$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_TM$seq_id)+(rank(pred_xgb))/length(submission_TM$seq_id))
+
+importance_matrix = xgb.importance(colnames(xgb_train), model = xgb)
+importance_matrix
+
+print(xgb.plot.importance(importance_matrix = importance_matrix[1:10]))
                   #+(rank(pred_xgb))/length(submission$seq_id))
 df_submission = data.frame( seq_id  = test[, "seq_id"],
                  type = test[,"type"],
@@ -908,7 +867,7 @@ df_submission = data.frame( seq_id  = test[, "seq_id"],
 # Deletion type:
 idx <- df_submission$type  == 'DEL'
 df_submission_del = df_submission
-df_submission_del[idx,'Tm'] <-(-rank(test_data_withbfactor$b[idx])/length(submission_TM$seq_id[idx]))+(rank(test_data_withbfactor$blosum[idx])/length(submission_TM$seq_id[idx])+ (rank(submission_demask$tm[idx]))/length(submission_TM$seq_id[idx]) )
+df_submission_del[idx,'Tm'] <-(-rank(test_data_withbfactor$b[idx])/length(submission_TM$seq_id[idx]))+(rank(test_data_withbfactor$blosum[idx])/length(submission_TM$seq_id[idx]) )
 
 
 
@@ -944,12 +903,17 @@ xgb_test = xgb.DMatrix(data=(data.matrix(testxgb[,-1])), label=(testxgb[,1] ))
 
 xgbcv_dtm = xgb.cv(data = xgb_train, nfold =25, nrounds =1000, early_stopping_rounds = 40)
 
+xgbcv_dtm$best_iteration
+
 opt_iterations_dtm = xgbcv_dtm$best_iteration
 
 xgb_dtm  <- xgboost(data = xgb_train, max.depth=5,nrounds=opt_iterations_dtm)
 
 importance_matrix = xgb.importance(colnames(xgb_train), model = xgb_dtm )
+
 importance_matrix
+
+print(xgb.plot.importance(importance_matrix = importance_matrix[1:10]))
 
 pred_xgb_dtm  = predict(xgb_dtm , xgb_test)
 
@@ -957,11 +921,15 @@ df_XGB_dtm  = data.frame( seq_id  = test[, "seq_id"],
                  type = test[,"type"],
                  dTm = pred_xgb_dtm  )
 submission_dTM <-  data.frame(seq_id = test$seq_id)
-submission_dTM$tm <- (-rank(test_data_withbfactor$b)/length(submission_dTM$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_dTM$seq_id)+(rank(pred_xgb_dtm ))/length(submission_dTM$seq_id) + (rank(submission_demask$tm))/length(submission_dTM$seq_id))
+submission_dTM$tm <- (-rank(test_data_withbfactor$b)/length(submission_dTM$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_dTM$seq_id)+(rank(pred_xgb_dtm ))/length(submission_dTM$seq_id))
 
                   #+(rank(pred_xgb))/length(submission$seq_id))
 
- # write.csv(df_XGB_dtm ,"type_included.csv")
+idx <- submission_dTM$type  == 'DEL'
+df_submission_del_dTM = submission_dTM
+df_submission_del_dTM[idx,'Tm'] <-(-rank(test_data_withbfactor$b[idx])/length(submission_TM$seq_id[idx]))+(rank(test_data_withbfactor$blosum[idx])/length(submission_TM$seq_id[idx]) )
+
+  write.csv(df_submission_del_dTM ,"subsmissions_dTm.csv")
   write.csv(submission_dTM,"submissions_dTm.csv")
 
 ```
@@ -979,6 +947,7 @@ best.m <- mtry[mtry[, 2] == min(mtry[, 2]), 1]
 print(mtry)
 print(best.m)
 
+summary(Ultra_dataset2)
 rfo_dtm <- randomForest(dtm ~., data = Ultra_dataset2, mtry = best.m)
 
 
@@ -990,8 +959,12 @@ write.csv(df_rf_nor ,"type_included_nor_rf.csv")
 
 
 submission_rf_dtm<-  data.frame(seq_id = test$seq_id)
-submission_rf_dtm$tm <- (-rank(test_data_withbfactor$b)/length(submission_rf_dtm$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_rf_dtm$seq_id)+(rank(pred_rfo_test))/length(submission_rf_dtm$seq_id)+ (rank(submission_demask$tm))/length(submission_rf_dtm$seq_id))
+submission_rf_dtm$tm <- (-rank(test_data_withbfactor$b)/length(submission_rf_dtm$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_rf_dtm$seq_id)+(rank(pred_rfo_test))/length(submission_rf_dtm$seq_id))
 
-write.csv(submission_rf_dtm,"RF_combo_dtm_nor.csv")
+idx <- submission_rf_dtm$type  == 'DEL'
+df_submission_del_dTM_nor = submission_rf_dtm
+df_submission_del_dTM_nor[idx,'tm'] <-(-rank(test_data_withbfactor$b[idx])/length(df_submission_del_dTM_nor$seq_id[idx]))+(rank(test_data_withbfactor$blosum[idx])/length(df_submission_del_dTM_nor$seq_id[idx]) )
+
+write.csv(df_submission_del_dTM_nor,"RF_combo_dtm_nor.csv")
 ```
 
