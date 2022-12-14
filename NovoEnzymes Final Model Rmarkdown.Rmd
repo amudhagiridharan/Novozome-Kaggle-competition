@@ -1,8 +1,9 @@
 ---
 title: "Novozymes Prediction"
 output:
-  pdf_document: default
   html_document: default
+  pdf_document: default
+  word_document: default
 date: "2022-12-09"
 ---
 
@@ -30,6 +31,13 @@ library(tree)
 library(randomForest)
 library(xgboost)
 library(gbm)
+library(ggplot2)
+library(patchwork)
+library(htmlwidgets)
+library(NGLVieweR)
+library(stringi)
+library(ggraph)
+library(tidygraph)
 ```
 
 ## Uploading Data
@@ -74,7 +82,6 @@ train[duplicated(train),] # no duplicates
 
 ## Train Data Wrangling
 
-
 ### Step 1: add sequence char count to train data
 
 ```{r}
@@ -83,7 +90,6 @@ train[duplicated(train),] # no duplicates
 train$charcnt <- seq_nchar(aa(train$protein_sequence))
 
 ```
-
 
 ### Step 2: Let us filter out the protein sequences which have less frequency of occurrance
 
@@ -96,6 +102,9 @@ train_filtered <- train %>%
 
 ```
 
+```{r}
+hist(train_filtered$charcnt, col = 'lightblue' ,main = "Histogram of Character Count Frequencies")
+```
 
 
 ### Step 3: add cluster number to train data
@@ -112,8 +121,7 @@ for (i in unique(train_filtered$charcnt)) {
 
 ### Step 4: Identify the wild type for train data !! long running query
 
-for each protein sequence length(charcnt) and cluster number, loopthrough and 
-find the protein sequence consensus (wildtype)
+for each protein sequence length(charcnt) and cluster number, loopthrough and find the protein sequence consensus (wildtype)
 
 ```{r}
 
@@ -124,14 +132,13 @@ for (i in unique(train_filtered$charcnt)) {
 }
 ```
 
-
-### Step 5:  Order it by charcnt for ease of use
+### Step 5: Order it by charcnt for ease of use
 
 ```{r}
 train_filtered <- train_filtered[order(train_filtered$charcnt),]
 ```
 
-### Step 6:  Add amino acid weightage for each sequence
+### Step 6: Add amino acid weightage for each sequence
 
 ```{r}
 
@@ -140,10 +147,9 @@ train_filtered_propdf <-  as.data.frame(do.call(rbind, train_filtered_prop))
 train_filtered <- cbind (train_filtered,train_filtered_propdf )
 ```
 
-
 ### Step 7: Add the group info to identify potential model training data
-grouping train data by datasource, PH , charcnt and cluster
-note a set of charcnt and cluster belong to one wild type
+
+grouping train data by datasource, PH , charcnt and cluster note a set of charcnt and cluster belong to one wild type
 
 ```{r}
 train_grouped <- train_filtered %>%     # Create ID by group
@@ -154,7 +160,7 @@ train_grouped <- train_filtered %>%     # Create ID by group
 head(train_grouped)
 ```
 
-### Step 8:  Final step to filter out only the top 25 groups to train our model
+### Step 8: Final step to filter out only the top 25 groups to train our model
 
 ```{r}
 train_grouped_top25 <- train_grouped %>% 
@@ -163,9 +169,10 @@ train_grouped_top25 <- train_grouped %>%
 
 head(train_grouped_top25)
 ```
+
 #### Step 9: Add Mutation position data
+
 ```{r}
-write.csv(train_grouped_top25, "train_grouped_top25.csv")
 
 train_grouped_top25[,c('type','resid','WT','MUT')] = NA
 for(i in 1:nrow(train_grouped_top25)){
@@ -188,7 +195,6 @@ if(train_grouped_top25$protein_sequence[i]==train_grouped_top25$wildtype[i]){
 
 ## Modifying Test Data
 
-
 #### Step 1 Add amino acid weightage for each sequence: Let us create the sequence weightage for prediction
 
 ```{r}
@@ -199,7 +205,9 @@ test <- cbind (test,test_propdf )
 ```
 
 #### Step 2 Add mutation information to testing set:
- Add mutation information to testing set:
+
+Add mutation information to testing set:
+
 ```{r}
 test[,c('type','resid','WT','MUT')] <- do.call(rbind,lapply(test$protein_sequence,function(seq){
   # case 1 = wild type:
@@ -219,10 +227,10 @@ test[,c('type','resid','WT','MUT')] <- do.call(rbind,lapply(test$protein_sequenc
 head(test)
 ```
 
-
 #### Step 3 - add the b factor from pdb file to test data
 
- Read AlphaFold2 result for wild type sequence:
+Read AlphaFold2 result for wild type sequence:
+
 ```{r}
 pdb <- unique(test_pdb[test_pdb$V1=='ATOM',c(6,11)])
 colnames(pdb) <- c('resid','b')
@@ -252,10 +260,529 @@ test_data_withbfactor$blosum[test_data_withbfactor$blosum>0] <- 0
 head(test_data_withbfactor)
 ```
 
+## EDA
+
+```{r}
+hist(train$pH, xlab='pH Values',border = 'black',col = 'lightblue', main = 'Histogram of pH values in train dataset')
+```
+
+```{r}
+train_gp = train_grouped_top25
+head(train_gp)
+```
+
+
+### Step 1 : Looking at the wild structure PDB Sequence shared in the data code
+
+```{r}
+protein_3d <- NGLVieweR("wildtype_structure_prediction_af2.pdb") %>%
+  addRepresentation(
+    type = "cartoon", 
+    param = list(
+      backgroundColor = "black",
+      colorScheme = "residueindex"
+      )
+        )  %>% setSpin()
+ htmlwidgets::saveWidget(protein_3d, "protein_3d.html")
+protein_3d
+  
+```
+
+### Step 2 : Making sure that the data is not repeated in both the Train and Test Datasets
+
+```{r}
+lapply(list(train, test), function(x) {
+  paste(min(x[["seq_id"]]), max(x[["seq_id"]]))
+})
+```
+
+### Step 3: Checking the Summary statistics of the pH column to understand the patterns in the data
+
+-   The range of the pH should lie between [0:14]
+
+```{r}
+lapply(list(train, test), function(x){
+  summary(x[["pH"]])
+})
+```
+
+### Step 4: Summary of column Data Source to understand the site which is most referred to understand the protein sequence
+
+```{r}
+lapply(list(train, test), function(x) {
+  x %>%
+    group_by(data_source) %>%
+    summarise(
+      .groups = "drop",
+      n = n()
+    ) %>%
+    arrange(desc(n)) %>%
+    head()
+})
+
+```
+
+```{r}
+eda_tm_1 <- train %>%
+  group_by(tm) %>%
+  summarise(
+    .groups = "drop",
+    n = n()
+  ) %>%
+  arrange(desc(n))
+
+head(eda_tm_1,10)
+
+```
+
+### Histograms for tm
+
+```{r}
+p01 <- ggplot(data = train, aes(x = tm)) +
+  geom_histogram(bins = 100) +
+  ylim(c(0,2000))
+
+p02 <- ggplot(data = train, aes(x = tm)) +
+  geom_histogram(bins = nrow(eda_tm_1)) +
+  ylim(c(0,2000))
+
+p01 + p02
+
+```
+
+### Test Data : Insertions, Deletions and Substitutions
+
+-   All mutations in the test data are single point mutations. There are no insertions. Deletion *or* substitution occur only.
+
+```{r}
+res_exp_adist <- lapply(as.list(test[["protein_sequence"]]), function(x) {
+  exp_adist <- adist(wtseq, x, counts = TRUE, partial = TRUE)
+
+  dplyr::bind_cols(
+    data.frame(exp_adist),
+    data.frame(attributes(exp_adist)$counts),
+    data.frame(attributes(exp_adist)$offsets)
+  )
+})
+res_exp_adist <- dplyr::bind_rows(res_exp_adist)
+names(res_exp_adist) <- gsub("X1.", "", names(res_exp_adist))
+
+```
+
+```{r}
+res_exp_adist %>% 
+  group_by(ins, del, sub) %>% 
+  summarise(.groups = "drop", n=n())
+```
+
+```{r}
+split_init <- unlist(strsplit(wtseq, ""))
+
+```
+
+```{r}
+test_clean <- test %>% 
+  filter(
+    protein_sequence != wtseq,
+    stringi::stri_length(protein_sequence) == 221 # include substitutions only
+    ) %>% 
+  rowwise() %>% 
+  mutate(
+    sub_from = split_init[!(split_init == unlist(strsplit(protein_sequence, "")))],
+    sub_to = unlist(strsplit(protein_sequence, ""))[!(split_init == unlist(strsplit(protein_sequence, "")))],
+    sub_pos = which((split_init == unlist(strsplit(protein_sequence, ""))) == FALSE)
+  ) %>% 
+  ungroup() %>% 
+  arrange(sub_from, sub_to, sub_pos) %>% 
+  mutate(
+    tm = row_number() 
+  )
+
+```
+
+```{r}
+head(test_clean,10)
+```
+
+```{r}
+p1 <- ggplot(
+    data = test_clean,
+    mapping = aes(x = factor(sub_from, levels = sort(unique(sub_from))))
+) +
+geom_bar() +
+ylim(c(0, 500)) +
+xlab("sub_from") +
+theme_minimal()
+
+p2 <- ggplot(
+    data = test_clean,
+    mapping = aes(x = factor(sub_to, levels = sort(unique(sub_to))))
+) +
+geom_bar() +
+ylim(c(0, 500)) +
+xlab("sub_to") +
+theme_minimal()
+
+p_2 <- p1 + p2
+
+ggsave(filename = "p_2.png", plot = p_2,  width = 10, dpi = 400)
+```
+
+```{r}
+p3 <- lapply(
+  split(1:221, ceiling(seq_along(1:221) / 25)), function(z) {
+    if (length(z) < 25) {
+      z <- min(z):(min(z) + 24)
+    }
+    ggplot(
+      data = test_clean %>%
+        filter(sub_pos %in% z),
+      mapping = aes(x = factor(sub_pos, levels = as.character(z)))
+    ) +
+      geom_bar() +
+      xlab("") +
+      ylab("") +
+      scale_x_discrete(drop = FALSE) +
+      theme_minimal()
+  }
+)
+
+p_3 <- wrap_plots(p3) +
+  plot_layout(ncol = 2) +
+  plot_annotation(
+    title = "sub_pos"
+  )
+
+ggsave(filename = "p_3.png", plot = p_3,  width = 15, dpi = 400)
+```
+
+```{r}
+head(train_gp)
+```
+
+```{r}
+summary(train_gp$charcnt)
+```
+
+### on Train Data
+
+```{r}
+p3t <- lapply(
+  split(1:260, ceiling(seq_along(1:260) / 25)), function(z) {
+    if (length(z) < 25) {
+      z <- min(z):(min(z) + 24)
+    }
+    ggplot(
+      data = train_gp %>%
+        filter(resid %in% z),
+      mapping = aes(x = factor(resid, levels = as.character(z)))
+    ) +
+      geom_bar() +
+      xlab("") +
+      ylab("") +
+      scale_x_discrete(drop = FALSE) +
+      theme_minimal()
+  }
+)
+
+p_3t <- wrap_plots(p3t) +
+  plot_layout(ncol = 2) +
+  plot_annotation(
+    title = "sub_pos"
+  )
+
+ggsave(filename = "p_3t.png", plot = p_3t,  width = 15, dpi = 600)
+
+
+p3t2 <- lapply(
+  split(276:450, ceiling(seq_along(276:450) / 25)), function(z) {
+    if (length(z) < 25) {
+      z <- min(z):(min(z) + 24)
+    }
+    ggplot(
+      data = train_gp %>%
+        filter(resid %in% z),
+      mapping = aes(x = factor(resid, levels = as.character(z)))
+    ) +
+      geom_bar() +
+      xlab("") +
+      ylab("") +
+      scale_x_discrete(drop = FALSE) +
+      theme_minimal()
+  }
+)
+
+p_3t2 <- wrap_plots(p3t2) +
+  plot_layout(ncol = 2) +
+  plot_annotation(
+    title = "sub_pos"
+  )
+p_3t2
+ggsave(filename = "p_3t2.png", plot = p_3t2,  width = 15, dpi = 600)
+```
+
+### Create a Edge List
+
+```{r}
+edges_test_clean_1 <- test_clean %>% 
+  mutate(
+    from = sub_from,
+    to = sub_to
+  ) %>% 
+  group_by(from, to) %>%
+  summarise(
+    .groups = "drop",
+    edge_count = n()
+  )
+
+
+```
+
+-sub_range_to_use is set to the first six positions at which a substitution occurs. Used as an example range for network exploration.
+
+```{r}
+sub_range_to_use = c(16:21)
+
+edges_test_clean_2 <- test_clean %>% 
+  filter(sub_pos %in% sub_range_to_use) %>%
+  mutate(
+    from = paste0("wildtype_", sprintf("%03d", sub_pos), sub_from),
+    to = paste0("mutation_", sprintf("%03d", sub_pos), sub_to)
+  ) %>% 
+  group_by(from, to) %>%
+  summarise(
+    .groups = "drop",
+    edge_count = n()
+  )
+
+```
+
+#### Explore Nodes
+
+The nodes occuring in wild type sequence and mutant sequences differ. No single point amino acid substitution changes from C, H or M to another amino acid. In contrast a amino acid substitution can go to C, H or M.
+
+```{r}
+sort(unique(edges_test_clean_1$from))
+sort(unique(edges_test_clean_1$to))
+```
+
+-   Amino acids that occure in the wild type sequence but not in the mutant sequences.
+
+```{r}
+setdiff(
+  sort(unique(edges_test_clean_1$from)),
+  sort(unique(edges_test_clean_1$to))
+)
+```
+
+-   Amino acids that occure in the mutant sequences but not in the wild type sequence.
+
+```{r}
+setdiff(
+  sort(unique(edges_test_clean_1$to)),
+  sort(unique(edges_test_clean_1$from))
+)
+```
+
+#### Set Levels
+
+Get all unique amino acids of wild type and mutant sequences.
+
+```{r}
+edge_levels <- sort(unique(c(edges_test_clean_1$from, edges_test_clean_1$to)))
+```
+
+### Visualize Edges
+
+There are no edges from C, H or M
+
+```{r}
+p4 <- ggplot(
+  data = edges_test_clean_1 %>% 
+    mutate(
+      from = factor(from, levels = edge_levels),
+      to = factor(to, levels = edge_levels)
+    ),
+  aes(x = to, y = from)
+) +
+  geom_point(aes(size = edge_count)) +
+  scale_x_discrete(drop = FALSE) +
+  scale_y_discrete(drop = FALSE) +
+  theme_minimal()
+
+p_4 <- p4 # just for coherence with other plots
+
+p_4
+# ggsave(filename = "p_4.png", plot = p_4,  width = 10, dpi = 400)
+```
+Node graph for grouped Train data
+
+
+```{r}
+edges_clean_train_1 <- train_grouped_top25 %>% 
+  mutate(
+    from = WT,
+    to = MUT
+  ) %>% 
+  group_by(from, to) %>%
+  summarise(
+    .groups = "drop",
+    edge_count = n()
+  )
+```
+
+```{r}
+sort(unique(edges_clean_train_1$from))
+sort(unique(edges_clean_train_1$to))
+```
+
+```{r}
+setdiff(
+  sort(unique(edges_clean_train_1$from)),
+  sort(unique(edges_clean_train_1$to))
+)
+```
+
+
+```{r}
+setdiff(
+  sort(unique(edges_clean_train_1$to)),
+  sort(unique(edges_clean_train_1$from))
+)
+```
+
+```{r}
+edge_levels1 <- sort(unique(c(edges_clean_train_1$from, edges_clean_train_1$to)))
+```
+
+
+```{r}
+p6 <- ggplot(
+  data = edges_clean_train_1 %>% 
+    mutate(
+      from = factor(from, levels = edge_levels1),
+      to = factor(to, levels = edge_levels1)
+    ),
+  aes(x = to, y = from)
+) +
+  geom_point(aes(size = edge_count)) +
+  scale_x_discrete(drop = FALSE) +
+  scale_y_discrete(drop = FALSE) +
+  theme_minimal()
+
+p_6 <- p6 # just for coherence with other plots
+
+p_6
+#ggsave(filename = "p_6.png", plot = p_6,  width = 10, dpi = 400)
+```
+
+### Functions
+
+```{r}
+protein_sequence_to_edge_list <- function(ps, sub_range = NULL) {
+  if(is.null(sub_range)) print("No sub_range provided. Full sequence is used.")
+  if(is.null(sub_range)) {
+      inner <- unlist(strsplit(ps, ""))
+  } else {
+      inner <- unlist(strsplit(ps, ""))[sub_range]
+  }
+  inner <- paste0("wildtype_", sprintf("%03d", sub_range), inner)
+  # create artificial root
+  e0 <- data.frame(
+    "from" = "zero_0000",
+    "to" = inner,
+    "edge_count" = 1L
+  )
+  # create edges
+  e1 <- data.frame(
+    "from" = inner[1:length(inner) -1],
+    "to" = inner[2:length(inner)],
+    "edge_count" = 1L
+  )
+  # use for cyclic graph: connect start to end
+  # e2 <- data.frame(
+  #   "from" = inner[length(inner)],
+  #   "to" = inner[1],
+  #   "edge_count" = 1L
+  # )
+  bind_rows(
+    e0,
+    e1#,
+    # e2
+    )
+}
+```
+
+### Visualize Networks
+
+```{r}
+edges_seq_init <- protein_sequence_to_edge_list(ps = wtseq, sub_range = sub_range_to_use)
+```
+
+-Get positions of the wild type sequence without any mutation (i.e., substitution)
+
+```{r}
+seq_init_to_none <- edges_seq_init$to[!(edges_seq_init$to %in% edges_test_clean_2$from)]
+```
+
+### Create artificial edges for non-mutated positions.
+
+```{r}
+edges_seq_init_to_none <- data.frame(
+  "from" = ifelse(length(seq_init_to_none) == 0, "zero_0000", seq_init_to_none),
+  "to" = "none",
+  "edge_count" = 1L
+)
+```
+
+### Combine all edges. Optional: Clean for further exploration.
+
+```{r}
+edges_combined <- bind_rows(
+  edges_test_clean_2,
+  edges_seq_init,
+  edges_seq_init_to_none
+) %>% 
+  filter(
+    !(stringr::str_detect(from, "wildtype") & stringr::str_detect(to, "wildtype"))
+  )
+```
+
+```{r}
+head(edges_combined)
+glimpse(edges_combined)
+```
+
+### Turn edge list into a graph opbject. Optional: modify and cleanup graph object
+
+```{r}
+g1 <- as_tbl_graph(edges_combined)
+g1 <- g1 %>% 
+  activate(nodes) %>% 
+  mutate(label = stringr::str_sub(name, -4, -1)) %>% 
+  filter(name != "none")
+g1
+```
+
+#### Create network plot
+
+```{r}
+p_g1 <- ggraph(g1, layout = "dendrogram", circular = TRUE) +
+  geom_edge_diagonal() +
+  geom_node_point() +
+  # TODO: adjust angle for labels
+  geom_node_label(mapping = aes(label = label), size = 4, alpha = .9, vjust = .5) #, repel = TRUE)
+```
+
+```{r}
+ggsave(filename = "p_g1.png", plot = p_g1,  width = 10, height = 10, dpi = 400)
+p_g1
+```
 
 
 ## Modelling Predicting Tm
 
+### XGBoost
 
 ```{r}
 set.seed(200)
@@ -295,34 +822,27 @@ submission_TM$tm <- (-rank(test_data_withbfactor$b)/length(submission_TM$seq_id)
 pred_xgb_valid = predict(xgb, xgb_valid)
 train_mse_OLS_XGB = mean((pred_xgb_valid - traingrp[validset,"tm"])^2)
 train_mse_OLS_XGB 
-                  #+(rank(pred_xgb))/length(submission$seq_id))
+               
 
 # write.csv(df,"type_included.csv")
  #write.csv(submission_TM ,"submissions_TM.csv")
 
 ```
 
-
-## Professor R package
+### Testing All Other Models on Tm
 
 ```{r}
 
 
-set.seed(200)  # <-- MODIFY this number
-# DO NOT MODIFY the next four lines
-# 1 means good quality, 0 means bad quality
+set.seed(200)  
 traingrp2 = na.omit(traingrp)
-trainset <- sample(1:nrow(traingrp2), 1000)  # DO NOT CHANGE: you must sample 80 data points for training
-validset <- setdiff(1:nrow(traingrp2), trainset)  # The remaining is used for validation
- # source in the ROC_func.R (presumably located in your current directory)
-#traingrp$type = as.factor(traingrp$type)
-# traingrp2$resid = as.integer(traingrp2$resid)
-# traingrp2$WT = as.factor(traingrp2$WT )
-# traingrp2$MUT = as.factor(traingrp2$MUT )
-# #library(brif)
+trainset <- sample(1:nrow(traingrp2), 1100)  
+validset <- setdiff(1:nrow(traingrp2), trainset)  
+
+
 library(randomForest)
 
-#pred_bf <- brif(tm ~., data = traingrp2[trainset,], newdata = traingrp2[validset, ])
+
  rfo <- randomForest(tm ~., data = traingrp2[trainset,])
 pred_rfo <- predict(rfo, newdata = traingrp2[validset,], type='response')
 
@@ -343,7 +863,8 @@ train_mse_OLS_rp = mean((pred_rp- traingrp2[validset,"tm"])^2)
 train_mse_OLS_rp 
 
 trainggrp2CT = traingrp2
-# need to convert it like this back from factor for it to work
+
+
 trainggrp2CT$WT = as.factor(trainggrp2CT$WT )
 trainggrp2CT$MUT = as.factor(trainggrp2CT$MUT )
 Party_mod = ctree(tm ~., data = trainggrp2CT[trainset,])
@@ -385,8 +906,7 @@ summary.gbm(gbm)
 
 ```
 
-
-## modelling on dtm 
+## modelling on dtm
 
 ### Creating dtm on our groups
 
@@ -408,7 +928,7 @@ train_grouped_top25_dtm_normalized$dtm <- ave(train_grouped_top25_dtm_normalized
 ## Putting string length on it too
 ```
 
-### Pulling in Jin Data to help 
+### Pulling in Jin Data to help
 
 ```{r}
 
@@ -443,7 +963,6 @@ JinTest_propdf <-  as.data.frame(do.call(rbind, JinTest_prop))
 JinTest <- cbind (JinTest,JinTest_propdf )
 
 ```
-
 
 ### Putting Jin data together
 
@@ -488,7 +1007,7 @@ Super_jin = rbind(JinTest2, JinTrain2, JinTm_scaled)
 Super_jin = na.omit(Super_jin)
 ```
 
-### Putting together dTm and Normalized dTm files 
+### Putting together dTm and Normalized dTm files
 
 ```{r}
 
@@ -509,11 +1028,10 @@ Ultra_dataset = rbind(train_grouped_top25_dtm_normalized, Super_jin)
 
 ### Modelling Stuff dTm
 
-
 ```{r}
 set.seed(200)
 library(xgboost)
-trainset <- sample(1:nrow(dTm_mastertable), 1900)  # DO NOT CHANGE: you must sample 80 data points for training
+trainset <- sample(1:nrow(dTm_mastertable), 1700)  # DO NOT CHANGE: you must sample 80 data points for training
 validset <- setdiff(1:nrow(dTm_mastertable), trainset)  # The remaining is used for validation
 #filter the necessary rows for modeling from train dataframe
 dTm_mastertable$resid = as.integer(dTm_mastertable$resid)
@@ -533,7 +1051,7 @@ str(testxgb)
 xgb_train = xgb.DMatrix(data=(data.matrix(dTm_mastertable[trainset,-1])), label=(dTm_mastertable[trainset,1] ))
 xgb_valid = xgb.DMatrix(data=(data.matrix(dTm_mastertable[validset,-1])), label=(dTm_mastertable[validset,1] ))
 xgb_test = xgb.DMatrix(data=(data.matrix(testxgb[,-1])), label=(testxgb[,1] ))
-xgb <- xgboost(data = xgb_train, max.depth=5,nrounds=25)
+xgb <- xgboost(data = xgb_train, nrounds = 25)
 importance_matrix = xgb.importance(colnames(xgb_train), model = xgb)
 importance_matrix
 pred_xgb = predict(xgb, xgb_test)
@@ -555,28 +1073,20 @@ train_mse_OLS_XGB_dtm
 
 ```
 
-
 ## Different Model for dTm
 
 ```{r}
 
 
-set.seed(200)  # <-- MODIFY this number
-# DO NOT MODIFY the next four lines
-# 1 means good quality, 0 means bad quality
+set.seed(200)  
+
 dTm_mastertable2 = na.omit(dTm_mastertable)
 dTm_mastertable2$resid = as.integer(dTm_mastertable2$resid)
-trainset <- sample(1:nrow(dTm_mastertable2), 1000)  # DO NOT CHANGE: you must sample 80 data points for training
+trainset <- sample(1:nrow(dTm_mastertable2), 1100)  # DO NOT CHANGE: you must sample 80 data points for training
 validset <- setdiff(1:nrow(dTm_mastertable2), trainset)  # The remaining is used for validation
- # source in the ROC_func.R (presumably located in your current directory)
-#dTm_mastertable$type = as.factor(dTm_mastertable$type)
-# dTm_mastertable2$resid = as.integer(dTm_mastertable2$resid)
-# dTm_mastertable2$WT = as.factor(dTm_mastertable2$WT )
-# dTm_mastertable2$MUT = as.factor(dTm_mastertable2$MUT )
-# #library(brif)
+
 library(randomForest)
 
-#pred_bf <- brif(tm ~., data = dTm_mastertable2[trainset,], newdata = dTm_mastertable2[validset, ])
  rfo <- randomForest(dtm ~., data = dTm_mastertable2[trainset,])
 pred_rfo <- predict(rfo, newdata = dTm_mastertable2[validset,], type='response')
 
@@ -639,20 +1149,14 @@ summary.gbm(gbm)
 
 ```
 
-
-
-
-
-
 ### Modelling Stuff Normalized dTm
-
 
 ```{r}
 set.seed(200)
 library(xgboost)
 Ultra_dataset = na.omit(Ultra_dataset)
-trainset <- sample(1:nrow(Ultra_dataset), 4700)  # DO NOT CHANGE: you must sample 80 data points for training
-validset <- setdiff(1:nrow(Ultra_dataset), trainset)  # The remaining is used for validation
+trainset <- sample(1:nrow(Ultra_dataset), 4700)  
+validset <- setdiff(1:nrow(Ultra_dataset), trainset)  
 #filter the necessary rows for modeling from train dataframe
 Ultra_dataset$resid = as.integer(Ultra_dataset$resid)
 
@@ -682,56 +1186,30 @@ cv <- xgb.cv(data = xgb_train, nrounds = 50, nthread = 2, nfold = 25, metrics = 
 importance_matrix = xgb.importance(colnames(xgb_train), model = xgb)
 importance_matrix
 
-# importance_matrix_cv = xgb.importance(colnames(xgb_train), model = cv)
-# importance_matrix_cv
-pred_xgb = predict(xgb, xgb_test)
+pred_xgb_valid_dtm = predict(xgb, xgb_valid)
 
-df_XGB_nor= data.frame( seq_id  = test[, "seq_id"],
-                 type = test[,"type"],
-                 dTm = pred_xgb )
-submission_dtm_nor <-  data.frame(seq_id = test$seq_id)
-submission_dtm_nor$dtm <- (-rank(test_data_withbfactor$b)/length(submission_dtm_nor$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_dtm_nor$seq_id)+ (rank(pred_xgb))/length(submission_dtm_nor$seq_id))
-                                                                             #+(rank(pred_xgb))/length(submission$seq_id))
-
-#pred_xgb_valid = predict(xgb, xgb_valid)
-train_mse_OLS_XGB_dtm_nor  = mean((pred_xgb_valid - Ultra_dataset[validset,"dtm"])^2)
+train_mse_OLS_XGB_dtm_nor  = mean((pred_xgb_valid_dtm - Ultra_dataset[validset,"dtm"])^2)
 train_mse_OLS_XGB_dtm_nor  
-                
 
- # write.csv(df_XGB_nor ,"type_included_nor_XGB.csv")
- #write.csv(submission_dtm_nor,"submissions_dtm_nor.csv")
-
-#   pred_xgb_valid_cv = predict(cv, xgb_valid)
-#  train_mse_OLS_XGB_dtm_nor_cv  = mean((pred_xgb_valid_cv - Ultra_dataset[validset,"dtm"])^2)
-# train_mse_OLS_XGB_dtm_nor_cv 
-#   pred_xgb_cv = predict(cv, xgb_test)
-# df_XGB_nor_cv= data.frame( seq_id  = test[, "seq_id"],
-#                  type = test[,"type"],
-#                  dTm = pred_xgb_cv )  
-# names(cv)
-```
 
 
 ## Different Model for Normalized dTm
+```
+
+### All Other Different Models
 
 ```{r}
 
 
-set.seed(200)  # <-- MODIFY this number
+set.seed(200)  # 
 # DO NOT MODIFY the next four lines
 # 1 means good quality, 0 means bad quality
 Ultra_dataset2 = na.omit(Ultra_dataset)
 trainset <- sample(1:nrow(Ultra_dataset2), 4700)  # DO NOT CHANGE: you must sample 80 data points for training
 validset <- setdiff(1:nrow(Ultra_dataset2), trainset)  # The remaining is used for validation
- # source in the ROC_func.R (presumably located in your current directory)
-#Ultra_dataset$type = as.factor(Ultra_dataset$type)
-# Ultra_dataset2$resid = as.integer(Ultra_dataset2$resid)
-# Ultra_dataset2$WT = as.factor(Ultra_dataset2$WT )
-# Ultra_dataset2$MUT = as.factor(Ultra_dataset2$MUT )
-# #library(brif)
+
 library(randomForest)
 
-#pred_bf <- brif(tm ~., data = Ultra_dataset2[trainset,], newdata = Ultra_dataset2[validset, ])
 rfo <- randomForest(dtm ~., data = Ultra_dataset2[trainset,])
 pred_rfo <- predict(rfo, newdata = Ultra_dataset2[validset,], type='response')
 
@@ -739,13 +1217,11 @@ pred_rfo_test <- predict(rfo, newdata = testxgb, type='response')
 df_rf_nor= data.frame( seq_id  = test[, "seq_id"],
                  type = test[,"type"],
                  dTm = pred_rfo_test )
-#write.csv(df_rf_nor ,"type_included_nor_rf.csv")
+
 
 
 submission_rf <-  data.frame(seq_id = test$seq_id)
 submission_rf$tm <- (-rank(test_data_withbfactor$b)/length(submission_rf$seq_id))+(rank(test_data_withbfactor$blosum)/length(submission_rf$seq_id)+(rank(pred_rfo_test))/length(submission_rf$seq_id))
-
-#write.csv(submission_rf,"RF_combo.csv")
 
 train_mse_OLS_rf_dtm_nor   = mean((pred_rfo- Ultra_dataset2[validset,"dtm"])^2)
 
@@ -756,21 +1232,19 @@ rp = rpart(dtm ~., data = Ultra_dataset2[trainset,])
 
 pred_rp  = predict(rp, newdata = Ultra_dataset2[validset,])
 
-#pred_rp_test <- predict(rp, newdata = testxgb)
 
 train_mse_OLS_rp_dtm_nor   = mean((pred_rp- Ultra_dataset2[validset,"dtm"])^2)
 
 train_mse_OLS_rp_dtm_nor   
 
 trainggrp2CT = Ultra_dataset2
-# need to convert it like this back from factor for it to work
+
 trainggrp2CT$WT = as.factor(trainggrp2CT$WT )
 trainggrp2CT$MUT = as.factor(trainggrp2CT$MUT )
 Party_mod = ctree(dtm ~., data = trainggrp2CT[trainset,])
 
 ctree_pred = predict(Party_mod, trainggrp2CT[validset,])
 
-#ctree_pred_test <- predict(Party_mod, newdata = testxgb)
 
 
 train_mse_OLS_ctree_dtm_nor  = mean((ctree_pred- trainggrp2CT[validset,"dtm"])^2)
@@ -778,8 +1252,6 @@ train_mse_OLS_ctree_dtm_nor  = mean((ctree_pred- trainggrp2CT[validset,"dtm"])^2
 train_mse_OLS_ctree_dtm_nor  
 
 
-
-# need to convert it like this back from factor for it to work
 Tree = tree(dtm ~., data = Ultra_dataset2[trainset,])
 
 Tree_pred = predict(Tree, Ultra_dataset2[validset,])
@@ -802,8 +1274,6 @@ gbm = gbm.fit.final3 <- gbm(
 
 gbm_pred = predict(gbm, trainggrp2CT[validset,])
 
-#gbm_pred_test = predict(gbm, newdata = testxgb)
-
 train_mse_OLS_gbm_dtm_nor   = mean((gbm_pred- trainggrp2CT[validset,"dtm"])^2)
 
 train_mse_OLS_gbm_dtm_nor  
@@ -814,12 +1284,10 @@ summary.gbm(gbm)
 
 ```
 
-
-
-
 ## Final Models
 
-### Tm Trained with most data possible : XGB Chosen. Using full data to train. 
+### Tm Trained with most data possible : XGB Chosen. Using full data to train.
+
 ```{r}
 set.seed(200)
 #filter the necessary rows for modeling from train dataframe
@@ -876,9 +1344,7 @@ df_submission_del[idx,'Tm'] <-(-rank(test_data_withbfactor$b[idx])/length(submis
   write.csv(df_submission ,"submissions_TM.csv")
 ```
 
-
 ### dTm Model Chosen: XGB
-
 
 ```{r}
 set.seed(200)
@@ -934,9 +1400,7 @@ df_submission_del_dTM[idx,'Tm'] <-(-rank(test_data_withbfactor$b[idx])/length(su
 
 ```
 
-
 ### dTm Normalized (I guess it's just target at this point)
-
 
 ```{r}
 
@@ -967,4 +1431,3 @@ df_submission_del_dTM_nor[idx,'tm'] <-(-rank(test_data_withbfactor$b[idx])/lengt
 
 write.csv(df_submission_del_dTM_nor,"RF_combo_dtm_nor.csv")
 ```
-
