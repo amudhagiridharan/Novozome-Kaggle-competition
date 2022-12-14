@@ -79,6 +79,7 @@ for (i in unique(train_filtered$charcnt)) {
 }
 
 
+
 # Step 4 Identify the wild type for train data !! long running query
 
 #for each protein sequence length(charcnt) and cluster number, loopthrough and 
@@ -118,6 +119,27 @@ head(train_grouped)
 train_grouped_top25 <- train_grouped %>% 
   group_by(group) %>% 
   filter(n() > 25)
+
+train_grouped_top25 <- as.data.frame(train_grouped_top25)
+
+train_grouped_top25[,c('type','resid','wt','mut')] = NA
+for(i in 1:nrow(train_grouped_top25)){
+  if(train_grouped_top25$protein_sequence[i]==train_grouped_top25$wildtype[i]){ 
+    train_grouped_top25[i ,c('type','resid','wt','mut')] = as.list(c('WT',-1,NaN,NaN))
+    # case 2 = substitution:
+  }
+  else if(nchar(train_grouped_top25$protein_sequence[i])==nchar(train_grouped_top25$wildtype[i])){ 
+    P <- mapply(function(x,y) which(x!=y)[1], strsplit(train_grouped_top25$protein_sequence[i],""), strsplit(train_grouped_top25$wildtype[i],""))
+    train_grouped_top25[i ,c('type','resid','wt','mut')]=as.list(c('SUB',P,substr(train_grouped_top25$wildtype[i],P,P),substr(train_grouped_top25$protein_sequence[i],P,P)))
+    # case 3 = deletion:
+  } else if(nchar(train_grouped_top25$protein_sequence[i])<nchar(train_grouped_top25$wildtype[i])){ 
+    wtsub <- substr(train_grouped_top25$wildtype[i],1,nchar(train_grouped_top25$protein_sequence[i]))
+    P <- mapply(function(x,y) which(x!=y)[1], strsplit(train_grouped_top25$protein_sequence[i],""), strsplit(wtsub,""))
+    train_grouped_top25[i ,c('type','resid','wt','mut')]=as.list(c('DEL',P,substr(train_grouped_top25$wildtype[i],P,P),NaN))
+  }
+} 
+
+
 
 head(train_grouped_top25)
 
