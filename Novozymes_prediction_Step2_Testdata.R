@@ -56,8 +56,8 @@ head(test_data_withbfactor)
 
 
 # Download blosum matrix and add score to testing set:
-download.file('https://www.ncbi.nlm.nih.gov/Class/FieldGuide/BLOSUM62.txt', destfile="BLOSUM62.txt")
-blosum <- read.table('BLOSUM62.txt')
+download.file('https://home.cc.umanitoba.ca/~psgendb/doc/local/pkg/ugene/data/weight_matrix/blosum100.txt', destfile="BLOSUM100.txt")
+blosum <- read.table('BLOSUM100.txt')
 test_data_withbfactor$blosum <- apply(test_data_withbfactor,1,function(x){
   if(x['type']=='WT'){
     return(0)
